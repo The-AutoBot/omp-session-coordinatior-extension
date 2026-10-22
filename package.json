@@ -1,0 +1,24 @@
+{
+  "name": "@autobot/omp-session-coordinator-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/extension/index.ts",
+    "./session-bus-client": "./src/extension/session-bus-client.ts",
+    "./native-input-receipt": "./src/extension/native-input-receipt.ts",
+    "./native-voice": "./src/extension/native-voice.ts",
+    "./collab-registry": "./src/extension/collab-registry.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test tests/*.test.ts",
+    "smoke": "bun --no-env-file tests/consumer-smoke.ts"
+  },
+  "dependencies": { "zod": "^4.1.0" },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "18.3.0",
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}
