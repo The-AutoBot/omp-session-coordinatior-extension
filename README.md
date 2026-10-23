@@ -7,7 +7,7 @@ Standalone native OMP client extension extracted from the session coordinator se
 Use the official OMP plugin manager and Git on each PC. The standalone OMP executable embeds Bun for plugin installation; end users do not need a separate Bun installation. Install trusted code only: extensions run inside OMP, not in a sandbox.
 
 ```sh
-omp plugin install github:The-AutoBot/omp-session-coordinatior-extension#v0.1.0
+omp plugin install github:The-AutoBot/omp-session-coordinatior-extension#v0.2.0
 omp plugin list
 ```
 
@@ -24,9 +24,19 @@ Git/npm plugin operations are user-scoped; `--scope project` does not isolate th
 
 ## Enrollment and activation
 
-Before connecting **each PC**, obtain an enabled per-PC enrollment from the operator of a compatible broker: its credential-free `/bus` endpoint, unique lower-case PC ID and PC-specific machine key. Arrange network/TLS access and broker-side role authorization with that operator. Downloading this public repository grants no access to any coordinator or other PC.
+On a new PC, install the pinned release above, then start a new OMP process and run:
 
-Provision the key through your private process-launch/secret mechanism, separately from Git download and outside the repository. Do not put secrets in install commands, URLs, shell history, tracked settings or logs. Set the process environment below before launching the OMP process that will use it; installation alone supplies none of these values.
+```text
+/session-connect https://agent.theautobot.ca
+```
+
+No bus environment credentials are needed on the new PC. The command displays a verification link and short code and offers to open your standard browser; choose No to use the link/code manually. Headless contexts never open the browser. Sign in to `https://agent.theautobot.ca` with your authorized dashboard account and explicitly approve/name the new PC. Return to OMP and wait for the connected confirmation. The browser never receives the machine key. Installation alone grants no coordinator access. This enrollment command requires `v0.2.0` or later; `v0.1.0` does not include it.
+
+Run `/session-connect` again at any time, including when already connected, to recover using the saved dashboard origin; supply a different HTTPS origin to change targets. `/session-connect cancel` cancels pending pairing. Only one pairing runs at a time; expiry, denial, cancellation, malformed responses, failed registration and failed credential persistence leave existing credentials and the active connection intact. Pairing first validates a separate temporary bus registration before committing the replacement. Re-pairing creates a new PC identity; previous credentials remain valid until explicitly revoked in the authenticated dashboard. Desktop access is not installed or enabled.
+
+Credentials are atomically saved outside the repository and OMP profile: Windows `%LOCALAPPDATA%\omp-session-coordinator\device.json`, or POSIX `${XDG_CONFIG_HOME:-~/.config}/omp-session-coordinator/device.json`. Windows applies a protected current-user/SYSTEM directory ACL; POSIX uses a private directory and owner-only file. Permission setup failure aborts replacement. Do not copy or publish this file.
+
+Explicit bus environment configuration remains authoritative by default, including partial/invalid configuration (no silent fallback). For recovery from environment-based configuration, `/session-connect` asks for explicit confirmation before switching to private local enrollment after successful validation and persistence. That durable user selection overrides the three bus credential environment variables; it does not modify environment files. Role/name/steering settings remain process-controlled. Without device enrollment support, an operator can still provision the per-PC ID, key and `/bus` endpoint through a private process-launch/secret mechanism. Never put keys in URLs, shell history, tracked settings or logs.
 
 After install or update, start a new OMP process or perform a **user-directed full restart/resume** of the intended session. `/reload` does not reload extension modules. Uninstall likewise does not unload code already running: fully exit/restart that process to stop using it. Do not automatically restart active users.
 
@@ -88,4 +98,4 @@ Moved tests: `extension-collab-lifecycle.integration.test.ts`, `native-input-rec
 
 ## Release and licensing
 
-The initial package version is `0.1.0`, intended for Git tag `v0.1.0`; release tagging/publication is separate from editing this package. No npm publishing workflow is required. This repository currently declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.
+Release `0.2.0` is installed using the immutable Git tag `v0.2.0` shown above and adds browser-approved per-PC enrollment. No npm publishing workflow is required. This repository currently declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.

@@ -23,6 +23,7 @@ import {
 } from "./session-bus-client";
 import { NativeHostVoice, type NativeVoiceAgentEnd, type NativeVoiceMessage } from "./native-voice";
 import { NativeInputReceipt } from "./native-input-receipt";
+import { dashboardUrl, enrollDevice, explicitCredentials, openVerificationPage, persistCredentials, readCredentials, selectStoredCredentials, type DeviceCredentials } from "./device-enrollment";
 
 const MAX_SESSION_FIELD_LENGTH = 200;
 const MAX_CWD_LENGTH = 2_048;
@@ -154,6 +155,79 @@ class SessionBusRuntime {
 	private clearRuntimeTimer: ((timer: ExtensionTimer) => void) | undefined;
 	private setRuntimeTimeout: ((callback: () => void, delayMs: number) => ExtensionTimer) | undefined;
 	private readonly pi: ExtensionAPI;
+	private pairing: AbortController | undefined;
+	private bindingEpoch = 0;
+
+	public cancelPairing(): void {
+		this.pairing?.abort();
+	}
+
+	public async connect(args: string, ctx: ExtensionContext): Promise<void> {
+		if (args.trim() === "cancel") {
+			this.cancelPairing();
+			ctx.ui.notify("Pairing cancelled; existing credentials and connection retained.", "info");
+			return;
+		}
+		if (this.pairing) {
+			ctx.ui.notify("Pairing already pending. Use /session-connect cancel first.", "warning");
+			return;
+		}
+		if (!isEligibleSession(ctx)) {
+			ctx.ui.notify("Connect requires an eligible interactive or participant session.", "warning");
+			return;
+		}
+		const controller = new AbortController();
+		this.pairing = controller;
+		const epoch = this.bindingEpoch;
+		const sessionId = ctx.sessionManager.getSessionId();
+		const current = () => !controller.signal.aborted && this.bindingEpoch === epoch &&
+			ctx.sessionManager.getSessionId() === sessionId;
+		try {
+			const saved = readCredentials();
+			const input = args.trim() || saved?.dashboard;
+			if (!input) {
+				ctx.ui.notify("Usage: /session-connect <https-dashboard-url>. No secret is needed.", "info");
+				return;
+			}
+			const origin = dashboardUrl(input);
+			const preferStored = explicitCredentials();
+			if (preferStored && !saved?.preferStored) {
+				const confirmed = await ctx.ui.confirm("Switch session enrollment?", "Explicit environment credentials are active. After successful pairing and validation, use private local enrollment instead? Environment files will not be changed.", { signal: controller.signal, timeout: 60_000 });
+				if (!confirmed || !current()) return;
+			}
+			const credentials = await enrollDevice(origin, controller.signal, async (url, code) => {
+				ctx.ui.notify(`Approve this PC at ${url.href}\nCode: ${code}\nUse /session-connect cancel to cancel. Existing access remains until successful replacement.`, "info");
+				if (ctx.hasUI && await ctx.ui.confirm("Open pairing page?", "Open the verification link in your default browser? Choose No to use the displayed link/code instead.", { signal: controller.signal, timeout: 30_000 }) && current()) openVerificationPage(url);
+			});
+			if (!current()) return;
+			const configuration = loadRuntimeConfiguration(ctx, credentials);
+			if (!configuration.ok) throw new Error("Invalid enrollment configuration.");
+			// A distinct temporary session proves real authenticated registration without replacing the active session.
+			const { promise, resolve, reject } = Promise.withResolvers<void>();
+			const probe = new SessionBusClient({
+				...configuration.value,
+				interactiveRoot: false,
+				session: { ...configuration.value.session, sessionId: crypto.randomUUID(), instanceId: crypto.randomUUID() },
+				timers: { setTimeout, clearTimer: clearTimeout },
+				onInboundMessage: () => {},
+				onStatusChange: status => { if (status.state === "registered") resolve(); },
+			});
+			const timer = setTimeout(() => reject(new Error("New connection could not register.")), 15_000);
+			const aborted = () => reject(new Error("Pairing cancelled."));
+			controller.signal.addEventListener("abort", aborted, { once: true });
+			try { probe.start(); await promise; }
+			finally { clearTimeout(timer); controller.signal.removeEventListener("abort", aborted); probe.shutdown(); }
+			if (!current()) return;
+			persistCredentials({ ...credentials, preferStored: preferStored || saved?.preferStored === true });
+			this.pairing = undefined;
+			startRuntimeAndRecoverAutomaticRoom(ctx, this);
+			ctx.ui.notify("PC paired and credentials saved privately. Previous PC access is not revoked; revoke it explicitly in the dashboard if needed.", "info");
+		} catch {
+			ctx.ui.notify(controller.signal.aborted ? "Pairing cancelled; existing access retained." : "Pairing failed; existing credentials and connection retained. Run /session-connect to retry.", "warning");
+		} finally {
+			if (this.pairing === controller) this.pairing = undefined;
+		}
+	}
 
 	public constructor(pi: ExtensionAPI) {
 		this.pi = pi;
@@ -244,6 +318,8 @@ class SessionBusRuntime {
 	}
 
 	public shutdown(): void {
+		this.bindingEpoch += 1;
+		this.cancelPairing();
 		this.namingBinding = undefined;
     this.receiptContext = undefined;
     this.receiptBindingGeneration += 1;
@@ -1146,6 +1222,13 @@ export default function sessionBusExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.registerCommand("session-connect", {
+		description: "Pair this PC with a dashboard; repeat to recover, or use cancel.",
+		handler: async (args, ctx) => {
+			void runtime.connect(args, ctx).catch(() => ctx.ui.notify("Pairing failed; existing access retained.", "warning"));
+		},
+	});
+
 	pi.registerCommand("session-bus", {
 		description: "Show session-bus connection status and role.",
 		handler: async (_args, ctx) => {
@@ -1241,16 +1324,20 @@ export default function sessionBusExtension(pi: ExtensionAPI): void {
 }
 
 function startRuntimeAndRecoverAutomaticRoom(ctx: ExtensionContext, runtime: SessionBusRuntime): void {
-	if (!runtime.start(ctx)) return;
+	if (!runtime.start(ctx)) {
+		if (ctx.hasUI) ctx.ui.notify("Session bus not configured. Use /session-connect <https-dashboard-url> to pair this PC.", "info");
+		return;
+	}
 	if (ctx.mode === "tui") runtime.startAutomaticCollab(ctx);
 }
 
-function loadRuntimeConfiguration(ctx: ExtensionContext): ConfigurationResult {
+function loadRuntimeConfiguration(ctx: ExtensionContext, candidate?: DeviceCredentials): ConfigurationResult {
+	const local = candidate ?? selectStoredCredentials(readCredentials());
 	const roleValue = process.env.OMP_SESSION_BUS_ROLE ?? "participant";
 	if (!isSessionRole(roleValue)) {
 		return { ok: false, errorCode: "invalid-bus-role" };
 	}
-	const token = process.env.OMP_SESSION_BUS_MACHINE_KEY;
+	const token = local?.machineKey ?? process.env.OMP_SESSION_BUS_MACHINE_KEY;
 	if (
 		token === undefined ||
 		Buffer.byteLength(token, "utf8") < 32 ||
@@ -1260,11 +1347,11 @@ function loadRuntimeConfiguration(ctx: ExtensionContext): ConfigurationResult {
 	) {
 		return { ok: false, errorCode: "missing-or-invalid-machine-key" };
 	}
-	const pcId = process.env.OMP_SESSION_BUS_PC_ID;
+	const pcId = local?.pcId ?? process.env.OMP_SESSION_BUS_PC_ID;
 	if (pcId === undefined || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(pcId)) {
 		return { ok: false, errorCode: "missing-or-invalid-pc-id" };
 	}
-	const endpoint = process.env.OMP_SESSION_BUS_ENDPOINT;
+	const endpoint = local?.busEndpoint ?? process.env.OMP_SESSION_BUS_ENDPOINT;
 	if (endpoint === undefined || endpoint.length === 0 || endpoint.trim() !== endpoint) {
 		return { ok: false, errorCode: "missing-or-invalid-bus-endpoint" };
 	}
@@ -1280,7 +1367,7 @@ function loadRuntimeConfiguration(ctx: ExtensionContext): ConfigurationResult {
 		url.password.length > 0 ||
 		url.search.length > 0 ||
 		url.hash.length > 0 ||
-		(url.protocol !== "wss:" && !(url.protocol === "ws:" && (url.hostname === "127.0.0.1" || url.hostname === "::1" || url.hostname === "localhost")))
+		(url.protocol !== "wss:" && !(url.protocol === "ws:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]" || url.hostname === "localhost")))
 	) {
 		return { ok: false, errorCode: "invalid-bus-endpoint" };
 	}
