@@ -13,6 +13,7 @@
   },
   "exports": {
     ".": "./src/extension/index.ts",
+    "./device-enrollment": "./src/extension/device-enrollment.ts",
     "./session-bus-client": "./src/extension/session-bus-client.ts",
     "./native-input-receipt": "./src/extension/native-input-receipt.ts",
     "./native-voice": "./src/extension/native-voice.ts",

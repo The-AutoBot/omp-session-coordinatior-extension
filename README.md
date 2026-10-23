@@ -96,7 +96,7 @@ Do not supply portal credentials, registry secrets, VAPID keys, or server config
 
 `src/extension/` owns the extension and real session-bus client. `src/shared/{protocol,machine-auth,machines,collab-input-receipts}.ts` are local copies of wire contracts; the server retains independent copies. Coordinate future wire changes across both repositories without runtime cross-checkout imports or shims.
 
-Public package exports are the root default extension plus `resolveSessionDisplayName`, and `./session-bus-client`, `./collab-registry`, `./native-input-receipt`, `./native-voice`. Server development tests may depend on a pinned Git commit of this package. Production server dependency installation must exclude that development dependency.
+Public package exports are the root default extension plus `resolveSessionDisplayName`, and `./session-bus-client`, `./collab-registry`, `./native-input-receipt`, `./native-voice`, `./device-enrollment`. The enrollment subpath exposes the existing cross-platform credential parser, protected persistence, origin validation, and pairing flow without loading the native session extension. Consumers must keep device identity outside synchronized setup. Server development tests and separately compiled fleet installers may depend on a pinned Git commit of this package; production server dependency installation excludes that development dependency.
 
 Moved tests: `extension-collab-lifecycle.integration.test.ts`, `native-input-receipt.test.ts`, `session-name.test.ts`. Broker/portal/reliability integration fixtures stay in the server repository and migrate their client imports to package exports. No server implementation, user guidance files, secrets, logs, temporary files or node_modules were copied into this repository.
 
