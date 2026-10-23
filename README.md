@@ -24,13 +24,29 @@ Git/npm plugin operations are user-scoped; `--scope project` does not isolate th
 
 ## Enrollment and activation
 
-On a new PC, install the pinned release above, then start a new OMP process and run:
+On a new PC, install the pinned release above. Browser viewing **and input/control** require an explicit native hosting opt-in; enrollment alone only registers sessions. In your terminal, enable control hosting for future OMP processes:
+
+```sh
+omp config set collab.autoStart control
+```
+
+Use the same OMP profile for installation, configuration and sessions. If you use a named profile, include `--profile <name>` on each command, for example `omp --profile work config set collab.autoStart control`, then start `omp --profile work`. This setting intentionally allows browser/terminal guests with the room link to read and control the session; protect room links as capabilities. `view` hosting is read-only and is not a substitute for control hosting in this dashboard.
+
+Start a new interactive OMP process and run:
 
 ```text
 /session-connect https://agent.theautobot.ca
 ```
 
 No bus environment credentials are needed on the new PC. The command displays a verification link and short code and offers to open your standard browser; choose No to use the link/code manually. Headless contexts never open the browser. Sign in to `https://agent.theautobot.ca` with your authorized dashboard account and explicitly approve/name the new PC. Return to OMP and wait for the connected confirmation. The browser never receives the machine key. Installation alone grants no coordinator access. This enrollment command requires `v0.2.0` or later; `v0.1.0` does not include it.
+
+For a session already running, explicitly start its native control host inside OMP:
+
+```text
+/collab start
+```
+
+Use `/collab status` to inspect hosting. A registered session with no usable control host can appear **Unavailable** in the dashboard; it does not need re-pairing. The extension observes and publishes the native host but never silently creates or restarts one. Changing the terminal auto-start setting is for future processes; `/collab start` is the explicit action for the current session. `/collab stop` stops sharing.
 
 Run `/session-connect` again at any time, including when already connected, to recover using the saved dashboard origin; supply a different HTTPS origin to change targets. `/session-connect cancel` cancels pending pairing. Only one pairing runs at a time; expiry, denial, cancellation, malformed responses, failed registration and failed credential persistence leave existing credentials and the active connection intact. Pairing first validates a separate temporary bus registration before committing the replacement. Re-pairing creates a new PC identity; previous credentials remain valid until explicitly revoked in the authenticated dashboard. Desktop access is not installed or enabled.
 
