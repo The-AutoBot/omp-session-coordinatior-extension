@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { discoverLocalCollabRoom, RegistryCommandError, type RegistryOutcome } from "./collab-registry";
+import { deriveEnrolledRoomWebLink, discoverLocalCollabRoom, RegistryCommandError, type RegistryOutcome } from "./collab-registry";
 
 import {
 	AUTOMATIC_COLLAB_ERROR_CODES,
@@ -85,6 +85,7 @@ type RuntimeConfiguration = {
 	machineKey: string;
 	session: Omit<SessionDescriptor, "connectedAt">;
 	url: string;
+	enrollmentDashboard: string | undefined;
 };
 
 type ConfigurationResult =
@@ -148,6 +149,8 @@ class SessionBusRuntime {
 	private rpcParticipantSessionId: string | undefined;
 	private sessionId: string | undefined;
 	private automaticRoomWebLink: string | undefined;
+	private automaticNativeRoomLink: string | undefined;
+	private enrollmentDashboard: string | undefined;
 	private manualRoom: PublishedRoom | undefined;
 	private manualRoomRevision = 0;
 	private manualRoomExpiryTimer: ExtensionTimer | undefined;
@@ -239,6 +242,8 @@ class SessionBusRuntime {
         if (!identity || !ctx || !isRootInteractive(ctx) || !room ||
             Date.parse(room.expiresAt) <= Date.now() || this.client?.getStatus().state !== "registered") return null;
         return { pcId: identity.pcId, sessionId: identity.sessionId, roomLink: room.webLink,
+          ...(this.manualRoom === undefined && this.automaticNativeRoomLink !== undefined
+            ? { nativeRoomLink: this.automaticNativeRoomLink } : {}),
           generation: this.receiptBindingGeneration, sessionManager: ctx.sessionManager };
       },
     });
@@ -270,6 +275,7 @@ class SessionBusRuntime {
 		}
 
 		this.sessionId = configuration.value.session.sessionId;
+		this.enrollmentDashboard = configuration.value.enrollmentDashboard;
 		this.rpcParticipantSessionId = ctx.mode === "rpc" ? this.sessionId : undefined;
 		this.automaticCollabIdentity = {
 			instanceId: configuration.value.session.instanceId,
@@ -356,6 +362,8 @@ class SessionBusRuntime {
 		this.manualRoomRevision += 1;
 		this.manualRoom = undefined;
 		this.automaticRoomWebLink = undefined;
+		this.automaticNativeRoomLink = undefined;
+		this.enrollmentDashboard = undefined;
 		this.publishAutomaticCollabDiagnostic();
 		this.clearRuntimeTimer = undefined;
 		this.setRuntimeTimeout = undefined;
@@ -784,7 +792,12 @@ class SessionBusRuntime {
 				this.scheduleAutomaticCollabRetry(ctx, generation, AUTO_COLLAB_WATCHDOG_MS);
 				return;
 			}
-			const webLink = validateCollabWebLink(room.url);
+			const nativeLink = validateCollabWebLink(room.url);
+			const webLink = deriveEnrolledRoomWebLink(nativeLink, this.enrollmentDashboard);
+			if (nativeLink !== this.automaticNativeRoomLink) {
+				this.receiptBindingGeneration += 1;
+				this.automaticNativeRoomLink = nativeLink;
+			}
 			discovered = true;
 			if (this.automaticCollabHostId !== hostId) {
 				this.automaticCollabHostId = hostId;
@@ -845,6 +858,7 @@ class SessionBusRuntime {
 		const hadAutomaticRoom = this.automaticRoomWebLink !== undefined || this.automaticRoomPublished;
     this.receiptBindingGeneration += 1;
 		this.automaticRoomWebLink = undefined;
+		this.automaticNativeRoomLink = undefined;
 		this.automaticRoomPublished = false;
 		if (this.roomRefreshTimer !== undefined) this.clearRuntimeTimer?.(this.roomRefreshTimer);
 		this.roomRefreshTimer = undefined;
@@ -1394,6 +1408,7 @@ function loadRuntimeConfiguration(ctx: ExtensionContext, candidate?: DeviceCrede
 			allowSteer: process.env.OMP_SESSION_BUS_ALLOW_STEER === "1",
 			machineKey: token,
 			url: url.toString(),
+			enrollmentDashboard: local?.dashboard,
 			session: {
 				pcId,
 				sessionId,

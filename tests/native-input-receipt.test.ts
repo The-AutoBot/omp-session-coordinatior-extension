@@ -152,6 +152,33 @@ describe("native original input receipts", () => {
     }
   });
 
+  it("binds managed publication to the exact captured native URL, never a same-hash alias", async () => {
+    const f = fixture();
+    const managed = `https://agent.example.test/live/${new URL(roomLink).hash}`;
+    let current = { ...f.options.binding()!, roomLink: managed, nativeRoomLink: roomLink };
+    const service = new NativeInputReceipt({ ...f.options, binding: () => current });
+    const r = { ...await request(), roomGeneration: createHash("sha256").update(managed).digest("hex") };
+    expect(await service.verifyRoom(managed)).toBe(true);
+    expect((await service.handle(r)).status).toBe("matched");
+    current = { ...current, nativeRoomLink: `https://other.example.test/${new URL(roomLink).hash}` };
+    expect(await service.verifyRoom(managed)).toBe(false);
+    expect((await service.handle(r)).status).toBe("unavailable");
+    const manual = new NativeInputReceipt({ ...f.options, binding: () => ({ ...f.options.binding()!, roomLink: managed }) });
+    expect(await manual.verifyRoom(managed)).toBe(false);
+    expect((await manual.handle(r)).status).toBe("unavailable");
+  });
+
+  it("rejects native-alias reassignment across asynchronous verification without relying on a generation bump", async () => {
+    const f = fixture();
+    const managed = `https://agent.example.test/live/${new URL(roomLink).hash}`;
+    let current = { ...f.options.binding()!, roomLink: managed, nativeRoomLink: roomLink };
+    const service = new NativeInputReceipt({ binding: () => current, discover: async () => {
+      current = { ...current, nativeRoomLink: `https://other.example.test/${new URL(roomLink).hash}` };
+      return f.discover();
+    } });
+    expect(await service.verifyRoom(managed)).toBe(false);
+  });
+
   it("reports unavailable if the public getEntry API is absent or throws", async () => {
     const f = fixture();
     const binding = f.options.binding()!;

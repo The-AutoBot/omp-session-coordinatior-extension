@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { resolve } from "node:path";
-import { discoverLocalCollabRoom, runCollabRegistryCommand, type RegistryCommand, type RegistryOutcome } from "../src/extension/collab-registry";
+import { deriveEnrolledRoomWebLink, discoverLocalCollabRoom, runCollabRegistryCommand, type RegistryCommand, type RegistryOutcome } from "../src/extension/collab-registry";
+import { selectStoredCredentials, validateCredentials } from "../src/extension/device-enrollment";
 
 const sessionId = "live-session";
 const pid = 4711;
@@ -20,6 +21,31 @@ function registry(hosts: unknown[], link: unknown, observed: string[][]): Regist
 }
 
 describe("official OMP collab registry discovery", () => {
+	it("routes selected stored enrollment through its dashboard without changing capability bytes", () => {
+		const saved = validateCredentials({ dashboard: "https://agent.theautobot.ca/", pcId: "pc-test",
+			machineKey: "fixture-private-key-not-production-12345", busEndpoint: "wss://agent.theautobot.ca/bus" });
+		const selected = selectStoredCredentials(saved, {});
+		const fragment = `#relay.example.test/r/room1234567.${"s".repeat(43)}`;
+		const native = `https://my.omp.sh/${fragment}`;
+		expect(deriveEnrolledRoomWebLink(native, selected?.dashboard)).toBe(`https://agent.theautobot.ca/live/${fragment}`);
+		const escaped = `https://my.omp.sh/#room1234567%2E${"s".repeat(43)}`;
+		expect(deriveEnrolledRoomWebLink(escaped, selected?.dashboard).split("#")[1]).toBe(escaped.split("#")[1]);
+		expect(deriveEnrolledRoomWebLink(native, undefined)).toBe(native);
+		expect(deriveEnrolledRoomWebLink(native, selectStoredCredentials(saved, { OMP_SESSION_BUS_PC_ID: "legacy" })?.dashboard)).toBe(native);
+	});
+
+	it("does not launder unsafe or malformed native capabilities into managed rooms", () => {
+		const capability = `#room1234567.${"s".repeat(43)}`;
+		for (const native of [
+			`http://public.example/${capability}`, `https://user:secret@my.omp.sh/${capability}`,
+			`https://my.omp.sh/?query=yes${capability}`, "https://my.omp.sh/#bad",
+			"https://my.omp.sh/#%GG", `https://my.omp.sh/#https://relay.example/r/room1234567`,
+			`https://my.omp.sh/#https://user:secret@relay.example/r/room1234567.${"s".repeat(43)}`,
+			`https://my.omp.sh/#https://relay.example/r/room1234567.${"s".repeat(43)}#${"s".repeat(43)}`,
+			`https://my.omp.sh/${capability}${"x".repeat(4096)}`,
+		]) expect(() => deriveEnrolledRoomWebLink(native, "https://agent.theautobot.ca/")).toThrow();
+	});
+
 	it("resolves only the current process and session and binds the link to its generation", async () => {
 		const calls: string[][] = [];
 		const room = await discoverLocalCollabRoom(sessionId, pid, registry([

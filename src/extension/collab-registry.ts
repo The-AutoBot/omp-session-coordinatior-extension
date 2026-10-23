@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import { promisify } from "node:util";
+import { dashboardUrl } from "./device-enrollment";
 
 const execute = promisify(execFile);
 
@@ -119,6 +120,40 @@ export const runCollabRegistryCommand: RegistryCommand = async args => {
 		throw failure("collab-registry-malformed-json", "parse", undefined, { stdout, stderr });
 	}
 };
+
+const roomIdPattern = "[A-Za-z0-9_-]{10,64}";
+const roomSecretPattern = "(?:[A-Za-z0-9_-]{43}|[A-Za-z0-9_-]{64})";
+const bareCapability = new RegExp(`^${roomIdPattern}(?:\\.|#)${roomSecretPattern}$`);
+const relayRoomPath = new RegExp(`^/r/(${roomIdPattern})(?:\\.(${roomSecretPattern}))?$`);
+const roomSecret = new RegExp(`^${roomSecretPattern}$`);
+
+/** Route only enrolled automatic rooms; preserve the native capability bytes verbatim. */
+export function deriveEnrolledRoomWebLink(nativeLink: string, dashboard: string | undefined): string {
+	if (dashboard === undefined) return nativeLink;
+	const invalid = (): never => { throw new RegistryCommandError("invalid-collab-registry-link"); };
+	if (!nativeLink || nativeLink.length > 4096 || nativeLink.trim() !== nativeLink) return invalid();
+	let native: URL;
+	let fragment: string;
+	try {
+		native = new URL(nativeLink);
+		fragment = decodeURIComponent(native.hash.slice(1));
+	} catch { return invalid(); }
+	if ((native.protocol !== "https:" && !(native.protocol === "http:" &&
+		["localhost", "127.0.0.1", "[::1]"].includes(native.hostname))) ||
+		native.username || native.password || native.search || native.hash.length <= 1) return invalid();
+	if (!bareCapability.test(fragment)) {
+		let relay: URL;
+		try { relay = new URL(fragment.includes("://") ? fragment : `https://${fragment}`); }
+		catch { return invalid(); }
+		if (!["https:", "wss:"].includes(relay.protocol) || relay.username || relay.password || relay.search) return invalid();
+		const path = relayRoomPath.exec(relay.pathname);
+		if (!path || ((path[2] === undefined) === (relay.hash.length <= 1)) ||
+			!roomSecret.test(path[2] ?? relay.hash.slice(1))) return invalid();
+	}
+	const published = `${new URL("/live/", dashboardUrl(dashboard)).href}${native.hash}`;
+	if (published.length > 4096) return invalid();
+	return published;
+}
 
 function record(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);

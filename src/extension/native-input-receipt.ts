@@ -7,6 +7,8 @@ export interface NativeInputReceiptBinding {
   pcId: string;
   sessionId: string;
   roomLink: string;
+  /** Exact original native URL, captured only for a trusted automatic publication. */
+  nativeRoomLink?: string;
   generation: number;
   sessionManager: ExtensionContext["sessionManager"];
 }
@@ -29,6 +31,7 @@ export class NativeInputReceipt {
       const current = this.options.binding();
       return current !== null && current.pcId === binding.pcId && current.sessionId === binding.sessionId &&
         current.roomLink === roomLink && current.generation === binding.generation &&
+        current.nativeRoomLink === binding.nativeRoomLink &&
         current.sessionManager === binding.sessionManager &&
         typeof current.sessionManager.getEntry === "function" &&
         current.sessionManager.getSessionId() === binding.sessionId && this.validHost(room, binding);
@@ -71,6 +74,7 @@ export class NativeInputReceipt {
     const current = this.options.binding();
     return current !== null && current.pcId === captured.pcId && current.sessionId === captured.sessionId &&
       current.roomLink === captured.roomLink && current.generation === captured.generation &&
+      current.nativeRoomLink === captured.nativeRoomLink &&
       current.sessionManager === captured.sessionManager && request.pcId === current.pcId &&
       request.sessionId === current.sessionId && typeof current.sessionManager.getEntry === "function" &&
       current.sessionManager.getSessionId() === current.sessionId &&
@@ -78,7 +82,7 @@ export class NativeInputReceipt {
   }
 
   private validHost(room: RegistryRoom | null, binding: NativeInputReceiptBinding): boolean {
-    return room !== null && room.url === binding.roomLink && room.host.sessionId === binding.sessionId &&
+    return room !== null && room.url === (binding.nativeRoomLink ?? binding.roomLink) && room.host.sessionId === binding.sessionId &&
       room.host.connected && room.host.access === "control";
   }
 }

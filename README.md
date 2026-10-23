@@ -7,7 +7,7 @@ Standalone native OMP client extension extracted from the session coordinator se
 Use the official OMP plugin manager and Git on each PC. The standalone OMP executable embeds Bun for plugin installation; end users do not need a separate Bun installation. Install trusted code only: extensions run inside OMP, not in a sandbox.
 
 ```sh
-omp plugin install github:The-AutoBot/omp-session-coordinatior-extension#v0.2.1
+omp plugin install github:The-AutoBot/omp-session-coordinatior-extension#v0.2.2
 omp plugin list
 ```
 
@@ -24,15 +24,7 @@ Git/npm plugin operations are user-scoped; `--scope project` does not isolate th
 
 ## Enrollment and activation
 
-On a new PC, install the pinned release above. Browser viewing **and input/control** require an explicit native hosting opt-in; enrollment alone only registers sessions. In your terminal, enable control hosting for future OMP processes:
-
-```sh
-omp config set collab.autoStart control
-```
-
-Use the same OMP profile for installation, configuration and sessions. If you use a named profile, include `--profile <name>` on each command, for example `omp --profile work config set collab.autoStart control`, then start `omp --profile work`. This setting intentionally allows browser/terminal guests with the room link to read and control the session; protect room links as capabilities. `view` hosting is read-only and is not a substitute for control hosting in this dashboard.
-
-Start a new interactive OMP process and run:
+On a new PC, install the pinned release above, then start a new interactive OMP process and run the command below. Use the same OMP profile for installation and sessions; for a named profile include `--profile <name>` on terminal commands.
 
 ```text
 /session-connect https://agent.theautobot.ca
@@ -40,13 +32,9 @@ Start a new interactive OMP process and run:
 
 No bus environment credentials are needed on the new PC. The command displays a verification link and short code and offers to open your standard browser; choose No to use the link/code manually. Headless contexts never open the browser. Sign in to `https://agent.theautobot.ca` with your authorized dashboard account and explicitly approve/name the new PC. Return to OMP and wait for the connected confirmation. The browser never receives the machine key. Installation alone grants no coordinator access. This enrollment command requires `v0.2.0` or later; `v0.1.0` does not include it.
 
-For a session already running, explicitly start its native control host inside OMP:
+With selected stored enrollment, automatic rooms are published through the enrolled dashboard's `/live/` page, preserving the native room capability exactly. A native room using another browser origin is not a reason to re-pair or manually start a second room. The extension neither changes native hosting settings nor creates/restarts hosts; deliberate native stop remains authoritative. Legacy environment-only configuration and manually published room URLs are unchanged.
 
-```text
-/collab start
-```
-
-Use `/collab status` to inspect hosting. A registered session with no usable control host can appear **Unavailable** in the dashboard; it does not need re-pairing. The extension observes and publishes the native host but never silently creates or restarts one. Changing the terminal auto-start setting is for future processes; `/collab start` is the explicit action for the current session. `/collab stop` stops sharing.
+Browser viewing and input require an existing usable native **control** host; view-only hosting is not a substitute. Missing hosting, relay failures and rejected publication are distinct causes of **Unavailable**, so the label alone does not establish a hosting problem. If intentionally configuring native auto-hosting, `omp config set collab.autoStart control` is the native opt-in for future processes in that same profile. `/collab status`, `/collab start` and `/collab stop` are native interactive inspection/manual controls, not per-session enrollment requirements or a fix for rejected browser origins. Room links grant read/control capability; keep them private.
 
 Run `/session-connect` again at any time, including when already connected, to recover using the saved dashboard origin; supply a different HTTPS origin to change targets. `/session-connect cancel` cancels pending pairing. Only one pairing runs at a time; expiry, denial, cancellation, malformed responses, failed registration and failed credential persistence leave existing credentials and the active connection intact. Pairing first validates a separate temporary bus registration before committing the replacement. Re-pairing creates a new PC identity; previous credentials remain valid until explicitly revoked in the authenticated dashboard. Desktop access is not installed or enabled.
 
@@ -114,4 +102,4 @@ Moved tests: `extension-collab-lifecycle.integration.test.ts`, `native-input-rec
 
 ## Release and licensing
 
-Release `0.2.1` is installed using the immutable Git tag `v0.2.1` shown above. It retains browser-approved per-PC enrollment from `0.2.0` and fixes native registry discovery on a fresh PC without manual executable configuration. No npm publishing workflow is required. This repository currently declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.
+Release `0.2.2` is installed using the immutable Git tag `v0.2.2` shown above. It fixes enrolled automatic-room browser routing and preserves exact native identity for input receipts, while retaining enrollment and native executable discovery from earlier releases. No npm publishing workflow is required. This repository currently declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.

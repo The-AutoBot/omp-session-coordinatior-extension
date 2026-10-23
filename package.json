@@ -1,6 +1,6 @@
 {
   "name": "@autobot/omp-session-coordinator-extension",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Native OMP extension for an authenticated per-PC session coordinator bus.",
   "repository": {
