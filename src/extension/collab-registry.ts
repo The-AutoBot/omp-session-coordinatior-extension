@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
@@ -77,7 +77,11 @@ export const runCollabRegistryCommand: RegistryCommand = async args => {
 		};
 		return new RegistryCommandError(code, Object.freeze(details));
 	};
-	const executable = process.env.OMP_EXECUTABLE;
+	// Only the standard compiled native host can identify itself without an override.
+	// Never launch a development Bun/Node runner as though it were the OMP CLI.
+	const nativeHost = /^(?:omp|omp\.exe)$/i.test(basename(process.execPath)) &&
+		typeof Bun !== "undefined" && /(?:\$bunfs|[\\/]~BUN[\\/])/i.test(Bun.main);
+	const executable = process.env.OMP_EXECUTABLE || (nativeHost ? process.execPath : undefined);
 	if (!executable || !isAbsolute(executable) || /\.(?:cmd|bat)$/i.test(executable) ||
 		executable.trim() !== executable ||
 		(process.platform === "win32" && !/\.(?:exe|com)$/i.test(executable))) {

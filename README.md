@@ -7,7 +7,7 @@ Standalone native OMP client extension extracted from the session coordinator se
 Use the official OMP plugin manager and Git on each PC. The standalone OMP executable embeds Bun for plugin installation; end users do not need a separate Bun installation. Install trusted code only: extensions run inside OMP, not in a sandbox.
 
 ```sh
-omp plugin install github:The-AutoBot/omp-session-coordinatior-extension#v0.2.0
+omp plugin install github:The-AutoBot/omp-session-coordinatior-extension#v0.2.1
 omp plugin list
 ```
 
@@ -44,7 +44,7 @@ After install or update, start a new OMP process or perform a **user-directed fu
 
 ## Compatibility and proof limits
 
-Development types are pinned to `@oh-my-pi/pi-coding-agent` 18.3.0; that is not a minimum-version or universal host-compatibility claim. The current standard CLI inspected for this release is OMP 18.12.5. The host must expose the public extension APIs used here. Automatic collab additionally requires official local collab APIs/registry and a compatible interactive root; RPC/headless and unsupported API contexts retain their activation constraints. `OMP_EXECUTABLE` must refer to the same real standard OMP executable as the host.
+Development types are pinned to `@oh-my-pi/pi-coding-agent` 18.3.0; that is not a minimum-version or universal host-compatibility claim. The current standard CLI inspected for this release is OMP 18.12.5. The host must expose the public extension APIs used here. Automatic collab additionally requires official local collab APIs/registry and a compatible interactive root; RPC/headless and unsupported API contexts retain their activation constraints. Standard compiled native OMP automatically uses its own executable for registry discovery; no manual `OMP_EXECUTABLE` setup is needed. Nonstandard runners require an explicit real native executable override.
 
 CLI help and installer validation are not runtime/broker proof. The repository smoke below uses a protocol peer, not the actual broker. Native installed-host loading and disposable actual-broker qualification are separate release acceptance evidence; no claim here establishes activation in existing user sessions or production end-to-end operation.
 
@@ -84,7 +84,7 @@ Provision secrets separately; never commit an environment file. Configure only t
 - `OMP_SESSION_BUS_NAME`: optional bounded display-name override; existing session name/default behavior otherwise applies.
 - `OMP_SESSION_BUS_ALLOW_STEER=1`: explicit local opt-in to steering; default off. Broker permissions still apply.
 - `OMP_SESSION_AUTO_COLLAB=0`: disables automatic local collab discovery/publication; enabled otherwise where host/context support it.
-- `OMP_EXECUTABLE`: absolute real OMP executable for official `collab list/link --json` discovery. Shell scripts (`.cmd`/`.bat`) are rejected; Windows requires `.exe`/`.com`. No executable is installed or selected by this repository.
+- `OMP_EXECUTABLE`: optional absolute real OMP executable override for official `collab list/link --json` discovery. When absent or empty, standard compiled native OMP uses its own running executable; development Bun/Node runners fail closed. Nonempty overrides remain authoritative and must point to the same native OMP as the host. Shell scripts (`.cmd`/`.bat`) are rejected; Windows requires `.exe`/`.com`. No executable is installed by this repository.
 
 Do not supply portal credentials, registry secrets, VAPID keys, or server configuration to the extension. Room links are capabilities: do not log or commit them. Broker authentication, per-PC identity, role authorization and opt-in steering remain enforced. Native input receipts read persisted host input; native voice commands are accepted only through the authenticated bus binding. Invalid/missing configuration leaves the extension unconnected rather than guessing a broker or identity.
 
@@ -98,4 +98,4 @@ Moved tests: `extension-collab-lifecycle.integration.test.ts`, `native-input-rec
 
 ## Release and licensing
 
-Release `0.2.0` is installed using the immutable Git tag `v0.2.0` shown above and adds browser-approved per-PC enrollment. No npm publishing workflow is required. This repository currently declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.
+Release `0.2.1` is installed using the immutable Git tag `v0.2.1` shown above. It retains browser-approved per-PC enrollment from `0.2.0` and fixes native registry discovery on a fresh PC without manual executable configuration. No npm publishing workflow is required. This repository currently declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.

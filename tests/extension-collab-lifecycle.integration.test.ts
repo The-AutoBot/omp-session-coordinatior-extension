@@ -70,10 +70,10 @@ describe("official OMP collab registry discovery", () => {
 		}
 	});
 
-	it("rejects missing or unqualified executable paths before invoking a CLI", async () => {
+	it("rejects absent or empty overrides under the development runner and invalid explicit paths", async () => {
 		const original = process.env.OMP_EXECUTABLE;
 		try {
-			for (const value of [undefined, "omp", "./omp", resolve("missing-omp.cmd"), process.cwd()]) {
+			for (const value of [undefined, "", " ", "omp", "./omp", resolve("missing-omp.cmd"), process.cwd()]) {
 				if (value === undefined) delete process.env.OMP_EXECUTABLE;
 				else process.env.OMP_EXECUTABLE = value;
 				await expect(runCollabRegistryCommand(["list", "--json"])).rejects.toMatchObject({ code: "invalid-omp-executable" });
