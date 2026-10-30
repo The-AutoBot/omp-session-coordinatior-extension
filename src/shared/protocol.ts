@@ -331,6 +331,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
       session: sessionDescriptorSchema,
       inputReceiptAvailable: z.boolean().optional(),
       interactiveRoot: z.boolean().optional(),
+      sentinelInspectionAvailable: z.boolean().optional(),
     })
     .strict(),
   z.object({ type: z.literal("list"), requestId: z.string().uuid() }),

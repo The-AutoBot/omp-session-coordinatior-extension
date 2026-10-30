@@ -303,6 +303,9 @@ class SessionBusRuntime {
 		const client = new SessionBusClient({
 			allowSteer: configuration.value.allowSteer,
 			interactiveRoot: isRootInteractive(ctx),
+      sentinelInspectionAvailable: () => isRootInteractive(ctx) &&
+        typeof ctx.sessionManager.getEntries === "function" && typeof ctx.sessionManager.getBranch === "function" &&
+        typeof ctx.sessionManager.getLeafId === "function" && typeof ctx.getSystemPrompt === "function",
 			session: configuration.value.session,
 			machineKey: configuration.value.machineKey,
 			url: configuration.value.url,
