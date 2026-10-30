@@ -18,6 +18,7 @@ import {
   type VoiceHostEvent,
 } from "../shared/protocol";
 import { type InputReceiptRequest, type InputReceiptResult, inputReceiptResultSchema } from "../shared/collab-input-receipts";
+import { inspectResultSchema, type InspectOperation, type InspectResult } from "../shared/session-consult";
 
 const MAX_INBOX_MESSAGES = 100;
 const MAX_PROCESSED_MESSAGE_IDS = 512;
@@ -73,6 +74,7 @@ export interface SessionBusClientOptions<TTimer> {
   onVoiceDisconnect?(): void;
   onInputReceipt?(request: InputReceiptRequest): Promise<InputReceiptResult>;
   inputReceiptAvailable?(): boolean;
+  onInspect?(operation: InspectOperation, signal: AbortSignal): Promise<InspectResult>;
   onRoomInputReceiptAvailable?(room: SessionRoom): Promise<boolean>;
 	onStatusChange?(status: SessionBusStatus): void;
 	onDiagnostic?(diagnostic: SessionBusDiagnostic): void;
@@ -123,7 +125,8 @@ type CorrelatedServerFrame = Extract<
 			| "notification_accepted"
 			| "notifications"
 			| "notification_read"
-			| "notification_session_read";
+			| "notification_session_read"
+      | "session_inspect_response";
 	}
 >;
 
@@ -172,6 +175,8 @@ export class SessionBusClient<TTimer> {
   private readonly onInputReceipt: SessionBusClientOptions<TTimer>["onInputReceipt"];
   private readonly inputReceiptAvailable: SessionBusClientOptions<TTimer>["inputReceiptAvailable"];
   private inputReceiptsInFlight = 0;
+  private readonly onInspect: SessionBusClientOptions<TTimer>["onInspect"];
+  private readonly inspections = new Map<string, AbortController>();
   private readonly onRoomInputReceiptAvailable: SessionBusClientOptions<TTimer>["onRoomInputReceiptAvailable"];
 	private readonly timers: ManagedTimers<TTimer>;
 	private readonly machineKey: string;
@@ -212,6 +217,7 @@ export class SessionBusClient<TTimer> {
     this.onVoiceDisconnect = options.onVoiceDisconnect;
     this.onInputReceipt = options.onInputReceipt;
     this.inputReceiptAvailable = options.inputReceiptAvailable;
+    this.onInspect = options.onInspect;
     this.onRoomInputReceiptAvailable = options.onRoomInputReceiptAvailable;
 		this.onStatusChange = options.onStatusChange;
 		this.onDiagnostic = options.onDiagnostic;
@@ -229,6 +235,8 @@ export class SessionBusClient<TTimer> {
 
 	public shutdown(): void {
 		this.cancellationGeneration += 1;
+    for (const controller of this.inspections.values()) controller.abort();
+    this.inspections.clear();
 		this.terminalNotifications.clear();
 		if (this.stopped) {
 			this.room = null;
@@ -516,6 +524,8 @@ export class SessionBusClient<TTimer> {
 			this.activeCoordinator = false;
       this.onVoiceDisconnect?.();
 			this.rejectAllPending("connection-closed");
+      for (const controller of this.inspections.values()) controller.abort();
+      this.inspections.clear();
 			this.rejectQueuedRoomPublications("connection-closed");
 			if (!this.stopped) {
 				this.state = "disconnected";
@@ -589,6 +599,30 @@ export class SessionBusClient<TTimer> {
 
 	private handleServerFrame(frame: ServerFrame): void {
 		switch (frame.type) {
+      case "session_inspect_cancel":
+        this.inspections.get(frame.requestId)?.abort();
+        return;
+      case "session_inspect_request": {
+        if (!this.registered) return;
+        const socket = this.socket;
+        const controller = new AbortController();
+        if (this.inspections.has(frame.requestId)) return;
+        this.inspections.set(frame.requestId, controller);
+        void Promise.resolve().then(() => this.onInspect
+          ? this.onInspect(frame.operation, controller.signal)
+          : { kind: "error" as const, code: "unsupported_host" as const })
+          .catch(() => ({ kind: "error" as const, code: "unavailable" as const }))
+          .then(result => {
+            if (controller.signal.aborted || socket !== this.socket || !this.registered) return;
+            const checked = inspectResultSchema.safeParse(result);
+            this.sendFrame({ type: "session_inspect_result", requestId: frame.requestId,
+              result: checked.success ? checked.data : { kind: "error", code: "unavailable" } });
+          }).catch(() => undefined).finally(() => this.inspections.delete(frame.requestId));
+        return;
+      }
+      case "session_inspect_response":
+        this.resolvePending(frame);
+        return;
 			case "registered": {
 				this.registered = true;
 				this.activeCoordinator = frame.coordinator;
@@ -873,10 +907,26 @@ export class SessionBusClient<TTimer> {
 		if (!this.activeCoordinator) throw new SessionBusError("active-coordinator-required");
 	}
 
+  public async inspect(to: string, operation: InspectOperation, signal?: AbortSignal): Promise<InspectResult> {
+    this.requireActiveCoordinator();
+    if (signal?.aborted) throw new SessionBusError("cancelled");
+    const requestId = crypto.randomUUID();
+    const cancel = () => {
+      try { this.sendFrame({ type: "session_inspect_cancel", requestId }); } catch { /* Disconnection cancels at the broker. */ }
+      this.rejectPending(requestId, "cancelled");
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      return (await this.request(requestId, { type: "session_inspect", requestId, to, operation },
+        "session_inspect_response", operation.kind === "question" ? 125_000 : 15_000)).result;
+    } finally { signal?.removeEventListener("abort", cancel); }
+  }
+
 	private request<TType extends CorrelatedServerFrame["type"]>(
 		requestId: string,
 		frame: ClientFrame,
 		expectedType: TType,
+    timeoutMs = REQUEST_TIMEOUT_MS,
 	): Promise<Extract<CorrelatedServerFrame, { type: TType }>> {
 		if (!this.registered) throw new SessionBusError("not-registered");
 		if (this.pending.size >= MAX_PENDING_REQUESTS) throw new SessionBusError("too-many-pending-requests");
@@ -888,8 +938,11 @@ export class SessionBusClient<TTimer> {
 				const pending = this.pending.get(requestId);
 				if (pending === undefined) return;
 				this.pending.delete(requestId);
+        if (frame.type === "session_inspect") {
+          try { this.sendFrame({ type: "session_inspect_cancel", requestId }); } catch { /* Already disconnected. */ }
+        }
 				reject(new SessionBusError("request-timeout"));
-			}, REQUEST_TIMEOUT_MS);
+			}, timeoutMs);
 			const pending: PendingRequest<TTimer> = {
 				expectedType,
 				expectedNotificationId: frame.type === "terminal_notification" ? frame.notificationId : undefined,

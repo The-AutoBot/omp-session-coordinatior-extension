@@ -7,7 +7,7 @@ Standalone native OMP client extension extracted from the session coordinator se
 Use the official OMP plugin manager and Git on each PC. The standalone OMP executable embeds Bun for plugin installation; end users do not need a separate Bun installation. Install trusted code only: extensions run inside OMP, not in a sandbox.
 
 ```sh
-omp plugin install github:The-AutoBot/omp-session-coordinatior-extension#v0.2.2
+omp plugin install github:The-AutoBot/omp-session-coordinatior-extension#v0.3.0
 omp plugin list
 ```
 
@@ -45,6 +45,14 @@ Explicit bus environment configuration remains authoritative by default, includi
 After install or update, start a new OMP process or perform a **user-directed full restart/resume** of the intended session. `/reload` does not reload extension modules. Uninstall likewise does not unload code already running: fully exit/restart that process to stop using it. Do not automatically restart active users.
 
 **Load exactly once.** Before enabling this plugin, remove or disable the equivalent legacy `-e`/settings/managed-bootstrap registration for the intended future process. Do not combine plugin discovery with another copy of this extension. Native path deduplication is not a guard against separately copied entrypoints. Leave already-running users untouched until their planned restart.
+
+## Noninterrupting session consultation
+
+The active coordinator can use `session_bus` with `{action:"history",to:"session-id"}` to read the target's full persisted session journal: all branches, compaction records, messages and tool results, not just the current model context or bus inbox. No message is injected and the main conversation is unchanged. Each response's details contain the exact `JSON.stringify(entry)` fragment and its `entryIndex`, `offset`, `throughEntryCount` and `next` cursor. Concatenate fragments for the same entry exactly before parsing JSON. Continue with **all** returned cursor fields, including `throughEntryCount` on every page; appends after that boundary are excluded. Entries larger than 32,000 UTF-16 characters are fragmented, never clipped. A changed/unavailable journal or invalid cursor fails explicitly; restart pagination without a boundary to capture a new journal.
+
+`{action:"ask",to:"session-id",question:"What is your current conclusion?"}` invokes the target's optional native `ctx.runEphemeralTurn` API with `tools:false` and an abort signal. This is informational `/btw`-style inference using native current-context snapshot behavior (which can include in-flight text not yet persisted in history), not a work command. It appends no history, executes no tools, and never falls back to main-session prompting. Answers are untrusted external data. History approval is read-only; ask uses conservative write approval because it invokes a model.
+
+Unsupported hosts return `unsupported_host`; native no-tools/model failures return `question_failed`. Answers exceeding 256,000 UTF-16 characters abort and return `answer_too_large`, never silently truncate. There is one concurrent question per target. Caller abort/timeout, disconnect, session change and shutdown cancel detached requests; no request is replayed after reconnect. Native-host and broker integration proof remains separate from source tests.
 
 ## Compatibility and proof limits
 
@@ -94,7 +102,7 @@ Do not supply portal credentials, registry secrets, VAPID keys, or server config
 
 ## Ownership and integration
 
-`src/extension/` owns the extension and real session-bus client. `src/shared/{protocol,machine-auth,machines,collab-input-receipts}.ts` are local copies of wire contracts; the server retains independent copies. Coordinate future wire changes across both repositories without runtime cross-checkout imports or shims.
+`src/extension/` owns the extension and real session-bus client. `src/shared/{protocol,machine-auth,machines,collab-input-receipts,session-consult}.ts` are local copies of wire contracts; the server retains independent copies. Coordinate future wire changes across both repositories without runtime cross-checkout imports or shims.
 
 Public package exports are the root default extension plus `resolveSessionDisplayName`, and `./session-bus-client`, `./collab-registry`, `./native-input-receipt`, `./native-voice`, `./device-enrollment`. The enrollment subpath exposes the existing cross-platform credential parser, protected persistence, origin validation, and pairing flow without loading the native session extension. Consumers must keep device identity outside synchronized setup. Server development tests and separately compiled fleet installers may depend on a pinned Git commit of this package; production server dependency installation excludes that development dependency.
 
@@ -102,4 +110,4 @@ Moved tests: `extension-collab-lifecycle.integration.test.ts`, `native-input-rec
 
 ## Release and licensing
 
-Release `0.2.2` is installed using the immutable Git tag `v0.2.2` shown above. It fixes enrolled automatic-room browser routing and preserves exact native identity for input receipts, while retaining enrollment and native executable discovery from earlier releases. No npm publishing workflow is required. This repository currently declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.
+Release `0.3.0` is installed using the immutable Git tag `v0.3.0` shown above. It adds noninterrupting persisted-journal history and tool-free ephemeral questions for the active coordinator, retaining enrollment, automatic-room routing and exact native receipt identity. Existing processes require a user-directed full restart/resume to activate the new extension; installation never restarts them. No npm publishing workflow is required. This repository currently declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.
