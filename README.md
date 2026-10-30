@@ -7,7 +7,7 @@ Standalone native OMP client extension extracted from the session coordinator se
 Use the official OMP plugin manager and Git on each PC. The standalone OMP executable embeds Bun for plugin installation; end users do not need a separate Bun installation. Install trusted code only: extensions run inside OMP, not in a sandbox.
 
 ```sh
-omp plugin install github:The-AutoBot/omp-session-coordinatior-extension#v0.3.0
+omp plugin install github:The-AutoBot/omp-session-coordinatior-extension#v0.5.0
 omp plugin list
 ```
 
@@ -20,7 +20,7 @@ omp plugin uninstall @autobot/omp-session-coordinator-extension
 
 `upgrade` re-resolves the recorded Git ref, so a fixed release tag stays pinned. To select a newer release, install its explicit `github:The-AutoBot/omp-session-coordinatior-extension#<new-tag>` spec instead. There is no automatic startup update. Uninstall removes plugin registration/package state, not broker enrollment or separately provisioned secrets; ask the broker administrator to revoke the PC key when decommissioning a PC.
 
-Git/npm plugin operations are user-scoped; `--scope project` does not isolate them. For disposable qualification use a dedicated named OMP `--profile` with owned configuration, not a live user profile. Never change installed OMP/SDK, PATH or active sessions to install this extension.
+Git/npm plugin operations are user-scoped; `--scope project` does not isolate them. Disposable default-profile qualification uses an owned HOME-relative `PI_CONFIG_DIR` and the qualified original agent directory for model/auth references, without copying credentials. Never change installed OMP/SDK, global PATH or active user sessions merely to install the extension.
 
 ## Enrollment and activation
 
@@ -66,9 +66,18 @@ Each snapshot binds the registered host instance, session, leaf, SHA-256 immutab
 
 The Sentinel-only `intervene` operation requires that exact snapshot/instance/revision and an expiry within two minutes. It injects attributed untrusted guidance via public user-message delivery; steering still requires existing opt-in. A successful receipt means delivery only, never accepted advice or resolved findings. The snapshot is consumed after delivery to reject replay. Broker authorization must reject this operation from ordinary coordinator inspection traffic.
 
+### Managed native Sentinel session
+
+Version 0.5.0 lets the shared per-PC runtime own one normal native TUI Sentinel participant, not an ephemeral reviewer. The package advertises `ompManagedSentinelProtocol: 1`; ordinary user processes do not become managed because of their name. A nonce-bound private local control directory transports scheduled requests into real hidden `sentinel:review` custom messages, with actual assistant replies persisted in the same journal used by human chat. No second chat renderer, model process, public listener or extra coordinator privilege is introduced.
+
+The runtime's first positional `/sentinel-bootstrap` invokes the public command-context `newSession` API to create a durable native journal. Existing journals use standard native resume; no raw journal is synthesized. Owned-root lifecycle changes receive a fresh binding and invalidate old review authority; outside-root replacements are declassified, not killed. Normal tools/plugins remain available to humans; scheduled reviews are plan-only. Genuine native user/collaboration input and peer messages fence the scheduled result without native abort, including while an incoming human request may still be preprocessing. Pausing review leaves the session accessible.
+
+The managed marker is projected to the authenticated app, not added to legacy generic bus descriptors. Snapshot inspection excludes managed Sentinel sessions, so it cannot review itself. Installation and activation remain separate: update files with current sessions open, and activate ordinary user inspection in a new process or a separately user-directed full restart/resume, never `/reload`.
+
+
 ## Compatibility and proof limits
 
-Development types are pinned to `@oh-my-pi/pi-coding-agent` 18.3.0; that is not a minimum-version or universal host-compatibility claim. The current standard CLI inspected for this release is OMP 18.12.5. The host must expose the public extension APIs used here. Automatic collab additionally requires official local collab APIs/registry and a compatible interactive root; RPC/headless and unsupported API contexts retain their activation constraints. Standard compiled native OMP automatically uses its own executable for registry discovery; no manual `OMP_EXECUTABLE` setup is needed. Nonstandard runners require an explicit real native executable override.
+Development types remain pinned to `@oh-my-pi/pi-coding-agent` 18.3.0; that is not a universal minimum-version claim. Managed native Sentinel was qualified with standard OMP 18.13.1, its public TUI/command/agent hooks, real collaboration host, persisted native journal and configured-model human/review turns. Newer public optional agent identity is inspected structurally. Native journal validation recognizes a legacy first header or the exact native 256-byte title slot immediately followed by its real matching header. RPC/rpc-ui are not substitutes for a normal collaboration-hosting TUI. Standard compiled OMP uses its own executable for registry discovery; nonstandard runners require an explicit real native executable.
 
 CLI help and installer validation are not runtime/broker proof. The repository smoke below uses a protocol peer, not the actual broker. Native installed-host loading and disposable actual-broker qualification are separate release acceptance evidence; no claim here establishes activation in existing user sessions or production end-to-end operation.
 
@@ -122,4 +131,4 @@ Moved tests: `extension-collab-lifecycle.integration.test.ts`, `native-input-rec
 
 ## Release and licensing
 
-Release `0.3.0` is installed using the immutable Git tag `v0.3.0` shown above. It adds noninterrupting persisted-journal history and tool-free ephemeral questions for the active coordinator, retaining enrollment, automatic-room routing and exact native receipt identity. Existing processes require a user-directed full restart/resume to activate the new extension; installation never restarts them. No npm publishing workflow is required. This repository currently declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.
+Release `0.5.0` uses the immutable Git tag `v0.5.0` shown above and adds the accessible managed native Sentinel session while retaining snapshot inspection, enrollment, normal room routing and native receipts. Install files with current sessions open; activate ordinary user inspection in a new process or a user-directed full restart/resume. Installation never restarts users. No npm publishing workflow is required. This repository declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.

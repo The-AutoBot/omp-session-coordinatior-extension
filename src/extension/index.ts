@@ -26,6 +26,7 @@ import {
 import { NativeHostVoice, type NativeVoiceAgentEnd, type NativeVoiceMessage } from "./native-voice";
 import { NativeInputReceipt } from "./native-input-receipt";
 import { dashboardUrl, enrollDevice, explicitCredentials, openVerificationPage, persistCredentials, readCredentials, selectStoredCredentials, type DeviceCredentials } from "./device-enrollment";
+import { installManagedSentinel, invalidateManagedSentinel, managedSentinelIdentity } from "./managed-sentinel";
 
 const MAX_SESSION_FIELD_LENGTH = 200;
 const MAX_CWD_LENGTH = 2_048;
@@ -211,10 +212,11 @@ class SessionBusRuntime {
 			if (!configuration.ok) throw new Error("Invalid enrollment configuration.");
 			// A distinct temporary session proves real authenticated registration without replacing the active session.
 			const { promise, resolve, reject } = Promise.withResolvers<void>();
+			const { managedAgent: _managedAgent, ...probeSession } = configuration.value.session;
 			const probe = new SessionBusClient({
 				...configuration.value,
 				interactiveRoot: false,
-				session: { ...configuration.value.session, sessionId: crypto.randomUUID(), instanceId: crypto.randomUUID() },
+				session: { ...probeSession, sessionId: crypto.randomUUID(), instanceId: crypto.randomUUID() },
 				timers: { setTimeout, clearTimer: clearTimeout },
 				onInboundMessage: () => {},
 				onStatusChange: status => { if (status.state === "registered") resolve(); },
@@ -297,7 +299,7 @@ class SessionBusRuntime {
     const consult = new SessionConsult(ctx, () => this.receiptContext === ctx &&
       ctx.sessionManager.getSessionId() === this.sessionId, {
         allowSteer: configuration.value.allowSteer,
-        deliver: (text, delivery) => this.pi.sendUserMessage(text, { deliverAs: delivery }),
+        deliver: (text, delivery) => { invalidateManagedSentinel(); this.pi.sendUserMessage(text, { deliverAs: delivery }); },
       }, configuration.value.session.instanceId);
     this.consult = consult;
 		const client = new SessionBusClient({
@@ -1141,6 +1143,7 @@ class SessionBusRuntime {
   }
 
 	private injectInboundMessage(message: AgentMessage): void {
+		invalidateManagedSentinel();
 		const content = formatExternalMessage(message);
 		if (message.triggerTurn && this.idle) {
 			this.pi.sendUserMessage(content);
@@ -1153,6 +1156,7 @@ class SessionBusRuntime {
 
 export default function sessionBusExtension(pi: ExtensionAPI): void {
 	const runtime = new SessionBusRuntime(pi);
+	installManagedSentinel(pi);
 	const urlParameter = pi
 		.arktype("1 <= string <= 2048")
 		.narrow((value, issue) => URL.canParse(value) || issue.mustBe("a valid URL"));
@@ -1432,6 +1436,7 @@ function loadRuntimeConfiguration(ctx: ExtensionContext, candidate?: DeviceCrede
 	}
 
 	const sessionId = ctx.sessionManager.getSessionId();
+	const managed = managedSentinelIdentity(ctx);
 	const configuredName = process.env.OMP_SESSION_BUS_NAME;
 	const name = resolveSessionDisplayName({
 		role: roleValue, configuredName,
@@ -1457,10 +1462,11 @@ function loadRuntimeConfiguration(ctx: ExtensionContext, candidate?: DeviceCrede
 			session: {
 				pcId,
 				sessionId,
-				instanceId: crypto.randomUUID(),
+				instanceId: managed?.instanceId ?? crypto.randomUUID(),
+				...(managed === undefined ? {} : { managedAgent: managed.managedAgent }),
 				name,
 				cwd: ctx.cwd,
-				role: roleValue,
+				role: managed ? "participant" : roleValue,
 				idle: ctx.isIdle(),
 			},
 		},

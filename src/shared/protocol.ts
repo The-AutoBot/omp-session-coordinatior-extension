@@ -5,7 +5,10 @@ import {
 
 import { z } from "zod";
 import { inputReceiptRequestSchema, inputReceiptResultSchema } from "./collab-input-receipts";
-import { inspectClientRequestSchema, inspectClientResultSchema, inspectCancelSchema, inspectHostRequestSchema, inspectResponseSchema } from "./session-consult";
+import {
+  inspectClientRequestSchema, inspectClientResultSchema, inspectCancelSchema,
+  inspectHostRequestSchema, inspectResponseSchema,
+} from "./session-consult";
 
 export const SESSION_ROLES = ["coordinator", "participant"] as const;
 export const DELIVERY_MODES = ["followUp", "nextTurn", "steer"] as const;
@@ -58,6 +61,7 @@ export const sessionDescriptorSchema = z.object({
   name: z.string().min(1).max(200),
   cwd: z.string().min(1).max(2_048),
   role: z.enum(SESSION_ROLES),
+  managedAgent: z.literal("sentinel").optional(),
   idle: z.boolean(),
   connectedAt: z.string().datetime(),
 });
@@ -101,6 +105,7 @@ export const dashboardSessionSchema = z.object({
   sessionId: sessionIdSchema,
   name: z.string().min(1).max(200),
   role: z.enum(SESSION_ROLES),
+  managedAgent: z.literal("sentinel").optional(),
   idle: z.boolean(),
   needsInput: z.boolean(),
   connectedAt: z.string().datetime(),
@@ -325,6 +330,9 @@ export type VoiceHostCommand = z.infer<typeof voiceHostCommandSchema>;
 export type VoiceHostEvent = z.infer<typeof voiceHostEventSchema>;
 export type VoiceControlReply = z.infer<typeof voiceControlReplySchema>;
 export const clientFrameSchema = z.discriminatedUnion("type", [
+  inspectClientRequestSchema,
+  inspectClientResultSchema,
+  inspectCancelSchema,
   z
     .object({
       type: z.literal("register"),
@@ -345,7 +353,6 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("collab_status"), status: automaticCollabDiagnosticSchema }).strict(),
   z.object({ type: z.literal("input_receipt_result"), requestId: z.string().uuid(),
     result: inputReceiptResultSchema }).strict(),
-  inspectClientRequestSchema, inspectClientResultSchema, inspectCancelSchema,
   terminalNotificationFrameSchema,
   z.object({
     type: z.literal("notification_session_read"),
@@ -371,6 +378,9 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
 ]);
 
 export const serverFrameSchema = z.discriminatedUnion("type", [
+  inspectHostRequestSchema,
+  inspectResponseSchema,
+  inspectCancelSchema,
   z
     .object({
       type: z.literal("registered"),
@@ -384,7 +394,6 @@ export const serverFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("room_updated"), requestId: z.string().uuid() }).strict(),
   z.object({ type: z.literal("input_receipt_request"), requestId: z.string().uuid(),
     receipt: inputReceiptRequestSchema }).strict(),
-  inspectHostRequestSchema, inspectResponseSchema, inspectCancelSchema,
   z.object({
     type: z.literal("notification_session_read"),
     requestId: z.string().uuid(),
