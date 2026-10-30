@@ -74,6 +74,10 @@ The runtime's first positional `/sentinel-bootstrap` invokes the public command-
 
 The managed marker is projected to the authenticated app, not added to legacy generic bus descriptors. Snapshot inspection excludes managed Sentinel sessions, so it cannot review itself. Installation and activation remain separate: update files with current sessions open, and activate ordinary user inspection in a new process or a separately user-directed full restart/resume, never `/reload`.
 
+Managed Sentinel does not publish its own blocked/completed terminal notifications. The producer uses the live managed identity, not its display name; the matching broker also acknowledges and discards cached producers' sends before storage or push. Other sessions and existing notification records are unaffected. This does not pause reviews or disable human chat.
+
+Managed runtimes supply the nonsecret `OMP_SESSION_BUS_DASHBOARD_URL` alongside explicit machine credentials. It is validated against the bus origin using the same enrollment boundary; a mismatched or unsafe dashboard fails closed. This preserves enrolled `/live/` routing even when the child has isolated credential-storage paths.
+
 
 ## Compatibility and proof limits
 

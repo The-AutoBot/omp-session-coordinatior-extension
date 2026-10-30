@@ -25,7 +25,7 @@ import {
 } from "./session-bus-client";
 import { NativeHostVoice, type NativeVoiceAgentEnd, type NativeVoiceMessage } from "./native-voice";
 import { NativeInputReceipt } from "./native-input-receipt";
-import { dashboardUrl, enrollDevice, explicitCredentials, openVerificationPage, persistCredentials, readCredentials, selectStoredCredentials, type DeviceCredentials } from "./device-enrollment";
+import { dashboardUrl, enrollDevice, explicitCredentials, openVerificationPage, persistCredentials, readCredentials, selectStoredCredentials, validateCredentials, type DeviceCredentials } from "./device-enrollment";
 import { installManagedSentinel, invalidateManagedSentinel, managedSentinelIdentity } from "./managed-sentinel";
 
 const MAX_SESSION_FIELD_LENGTH = 200;
@@ -567,6 +567,8 @@ class SessionBusRuntime {
 	}
 
 	private canPublishTerminalNotification(client: SessionBusClient<ExtensionTimer>): boolean {
+		const binding = this.namingBinding;
+		if (binding?.client === client && managedSentinelIdentity(binding.ctx) !== undefined) return false;
 		const status = client.getStatus();
 		return status.state === "registered" && (status.role === "participant" || status.activeCoordinator);
 	}
@@ -1434,6 +1436,15 @@ function loadRuntimeConfiguration(ctx: ExtensionContext, candidate?: DeviceCrede
 	) {
 		return { ok: false, errorCode: "invalid-bus-endpoint" };
 	}
+	let enrollmentDashboard = local?.dashboard;
+	const explicitDashboard = process.env.OMP_SESSION_BUS_DASHBOARD_URL;
+	if (enrollmentDashboard === undefined && explicitDashboard !== undefined) {
+		try {
+			enrollmentDashboard = validateCredentials({ dashboard: explicitDashboard, pcId, machineKey: token, busEndpoint: endpoint }).dashboard;
+		} catch {
+			return { ok: false, errorCode: "invalid-enrollment-dashboard" };
+		}
+	}
 
 	const sessionId = ctx.sessionManager.getSessionId();
 	const managed = managedSentinelIdentity(ctx);
@@ -1458,7 +1469,7 @@ function loadRuntimeConfiguration(ctx: ExtensionContext, candidate?: DeviceCrede
 			allowSteer: process.env.OMP_SESSION_BUS_ALLOW_STEER === "1",
 			machineKey: token,
 			url: url.toString(),
-			enrollmentDashboard: local?.dashboard,
+			enrollmentDashboard,
 			session: {
 				pcId,
 				sessionId,
