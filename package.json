@@ -1,6 +1,6 @@
 {
   "name": "@autobot/omp-session-coordinator-extension",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "description": "Native OMP extension for an authenticated per-PC session coordinator bus.",
   "repository": {
@@ -11,7 +11,7 @@
   "omp": {
     "extensions": ["./src/extension/index.ts"]
   },
-  "ompManagedSentinelProtocol": 1,
+  "ompManagedSentinelProtocol": 2,
   "exports": {
     ".": "./src/extension/index.ts",
     "./device-enrollment": "./src/extension/device-enrollment.ts",
