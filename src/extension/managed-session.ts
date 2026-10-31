@@ -53,26 +53,27 @@ function readRecord(directory: string, name: string): unknown {
   } finally { closeSync(fd); }
 }
 
-export class ManagedSentinelBridge {
+export class ManagedSessionBridge {
   private binding: Binding | undefined;
   private watcher?: FSWatcher;
   private bootstrapped = false;
   private fenced = false;
   private constructor(private readonly pi: ExtensionAPI, private readonly launchId: string,
-    private readonly control: string, private readonly sessions: string) {}
+    private readonly control: string, private readonly sessions: string,
+    private readonly sentinel: boolean) {}
 
-  static create(pi: ExtensionAPI): ManagedSentinelBridge | undefined {
-    if (process.env.OMP_PC_RUNTIME_MANAGED_AGENT !== "sentinel") return;
+  static create(pi: ExtensionAPI): ManagedSessionBridge | undefined {
+    if (!["sentinel", "session"].includes(process.env.OMP_PC_RUNTIME_MANAGED_AGENT ?? "")) return;
     try {
       const nonce = uuid.parse(process.env.OMP_PC_RUNTIME_LAUNCH_ID);
       const control = plainPath(process.env.OMP_PC_RUNTIME_CONTROL_DIRECTORY ?? "");
       const sessions = plainPath(process.env.OMP_PC_RUNTIME_SESSION_DIRECTORY ?? "");
       if (!lstatSync(control).isDirectory() || !lstatSync(sessions).isDirectory() || control === sessions || within(control, sessions) || within(sessions, control)) return;
-      return new ManagedSentinelBridge(pi, nonce, control, sessions);
+      return new ManagedSessionBridge(pi, nonce, control, sessions, process.env.OMP_PC_RUNTIME_MANAGED_AGENT === "sentinel");
     } catch { return; }
   }
 
-  identity(ctx: ExtensionContext): { managedAgent: "sentinel"; instanceId: string } | undefined {
+  identity(ctx: ExtensionContext): { managedAgent?: "sentinel"; instanceId: string } | undefined {
     if (this.fenced || ctx.mode !== "tui" || !ctx.hasUI || isSubagent(ctx)) return;
     try {
       const file = ctx.sessionManager.getSessionFile();
@@ -111,16 +112,17 @@ export class ManagedSentinelBridge {
         this.binding = { ctx, sessionId, sessionFile, instanceId: crypto.randomUUID() };
       }
       this.binding.ctx = ctx;
-      return { managedAgent: "sentinel", instanceId: this.binding.instanceId };
+      return { ...(this.sentinel ? { managedAgent: "sentinel" as const } : {}), instanceId: this.binding.instanceId };
     } catch { return; }
   }
 
   install(): void {
-    this.pi.registerCommand("sentinel-bootstrap", {
-      description: "Initialize the first owned Sentinel journal.",
+    const command = this.sentinel ? "sentinel-bootstrap" : "runtime-bootstrap";
+    this.pi.registerCommand(command, {
+      description: "Initialize the first owned native journal.",
       handler: async (_args, ctx) => {
         // Only the runtime's first blank positional launch may materialize a session.
-        if (this.bootstrapped || this.binding || this.fenced || !process.argv.includes("/sentinel-bootstrap") ||
+        if (this.bootstrapped || this.binding || this.fenced || !process.argv.includes(`/${command}`) ||
           ctx.mode !== "tui" || !ctx.hasUI || !ctx.isIdle() || ctx.hasPendingMessages() ||
           ctx.sessionManager.getEntries().some(entry =>
             !["model_change", "thinking_level_change", "service_tier_change"].includes(entry.type))) return;
@@ -134,7 +136,7 @@ export class ManagedSentinelBridge {
         }
         this.bootstrapped = true;
         const result = await ctx.newSession();
-        if (!result.cancelled && this.identity(ctx)) await this.pi.setSessionName("Sentinel");
+        if (!result.cancelled && this.identity(ctx) && this.sentinel) await this.pi.setSessionName("Sentinel");
       },
     });
     const bind = (_event: unknown, ctx: ExtensionContext) => {
@@ -156,7 +158,7 @@ export class ManagedSentinelBridge {
     });
     this.pi.on("session_branch", bind);
     this.pi.on("before_agent_start", (event, ctx) => {
-      if (!this.identity(ctx)) return;
+      if (!this.sentinel || !this.identity(ctx)) return;
       return { systemPrompt: [...event.systemPrompt,
         "You are Sentinel, this PC's accessible supervision and coordination participant. Help humans normally. " +
         "Scheduled supervision asks other sessions through their native informational side turns. " +
@@ -218,19 +220,23 @@ export class ManagedSentinelBridge {
   }
 }
 
-let bridge: ManagedSentinelBridge | undefined;
-export function installManagedSentinel(pi: ExtensionAPI): void {
-  bridge = ManagedSentinelBridge.create(pi);
+let bridge: ManagedSessionBridge | undefined;
+export function installManagedSession(pi: ExtensionAPI): void {
+  bridge = ManagedSessionBridge.create(pi);
   bridge?.install();
-  if (!bridge && process.env.OMP_PC_RUNTIME_MANAGED_AGENT === "sentinel") {
+  if (!bridge && ["sentinel", "session"].includes(process.env.OMP_PC_RUNTIME_MANAGED_AGENT ?? "")) {
     // Consume the startup command even when ownership validation fails; it must
     // never fall through to a model prompt in an explicitly managed child.
-    pi.registerCommand("sentinel-bootstrap", {
-      description: "Initialize the owned Sentinel journal.",
-      handler: async (_args, ctx) => { ctx.ui.notify("Sentinel ownership validation failed; initialization refused.", "error"); },
+    pi.registerCommand(process.env.OMP_PC_RUNTIME_MANAGED_AGENT === "sentinel" ? "sentinel-bootstrap" : "runtime-bootstrap", {
+      description: "Initialize the owned native journal.",
+      handler: async (_args, ctx) => { ctx.ui.notify("Runtime ownership validation failed; initialization refused.", "error"); },
     });
   }
 }
 export function managedSentinelIdentity(ctx: ExtensionContext): { managedAgent: "sentinel"; instanceId: string } | undefined {
+  const identity = bridge?.identity(ctx);
+  return identity?.managedAgent === "sentinel" ? { managedAgent: "sentinel", instanceId: identity.instanceId } : undefined;
+}
+export function managedSessionIdentity(ctx: ExtensionContext) {
   return bridge?.identity(ctx);
 }
