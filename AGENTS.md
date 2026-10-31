@@ -1,5 +1,10 @@
 # Repository guidance
 
+## Shared task contract
+- Inherit `C:/Users/gabou/.omp/agent/AGENTS.md`: its proportional Request lifecycle, authoritative task state, phase/effect and privacy boundaries, independent-slice ownership, focused consumer evidence and truthful handoffs/closure apply without extra ceremonial gates. Analysis/preparation is not execution authority; preserve stop corrections and reconcile unknown operation outcomes before replay.
+- Inherit its curated, scoped decision-register memory rules (source/date, live applicability, replacement-first soft retirement and derived-recall checks, no bank reset without explicit approval); never infer automatic retention from prompt text rather than effective configuration. Source/SDK changes do not establish installed native CLI behavior or authorize its replacement; retain project-specific versions and safety rules.
+
+
 This repository owns only the OMP session coordinator client extension. Keep it independently installable; never introduce sibling-checkout imports, runtime shims, or copied server implementations. Use existing Bun/TypeScript patterns and preserve the authenticated wire contract.
 
 Entrypoint: `src/extension/index.ts`. Public package subpaths expose the session-bus client, collab registry, native input receipts and native voice handler. Shared wire files are local copies also owned by the server repository; coordinate changes to both copies and their consumers explicitly.
@@ -13,6 +18,8 @@ For native qualification, use a sanitized child environment and an owned `PI_CON
 Pairing recovery must remain single-flight and cancellable through the actual native command dispatcher, not only an AbortController unit test. Validate a candidate on a distinct temporary session before private persistence and active replacement; cancelled or rejected candidates must preserve the previous credential bytes and real connection. Native startup may load legacy launch credentials even with a sanitized child environment, so inspect only configuration presence and require explicit stored-mode selection rather than silently bypassing it. On Windows reapply directory DACLs without requesting SACL privileges, and verify the committed credential file's actual current-user/SYSTEM ACL.
 
 Use `bun install --frozen-lockfile`, `bun run typecheck`, `bun run test`, and `bun run smoke` when verification is explicitly assigned. The smoke proves public package resolution and real loopback client transport against a schema-validated protocol peer, not actual broker integration or installed-host activation. Mixed broker/portal tests live in the server repository.
+
+For structured native side-turn results, pass public `dedupeReply:false` and retain explicit streaming/final answer bounds. The SDK default silently deduplicates lines and trims `replyText` to 4 KiB, corrupting longer JSON; a returned string is not proof of a complete answer. Keep review responses concise for already-open processes retaining the prior extension; never restart user sessions just to activate downloaded code.
 
 Never commit machine credentials, environment files, room capability links, logs, node_modules or disposable smoke artifacts. Never change installed OMP/SDK, user configuration, PATH or live sessions as part of repository development. Document registration without silently activating it. Automatic collab must continue using official public host/registry APIs; steering stays opt-in and broker authorization remains authoritative.
 
