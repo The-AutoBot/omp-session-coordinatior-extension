@@ -26,7 +26,7 @@ import {
 import { NativeHostVoice, type NativeVoiceAgentEnd, type NativeVoiceMessage } from "./native-voice";
 import { NativeInputReceipt } from "./native-input-receipt";
 import { dashboardUrl, enrollDevice, explicitCredentials, openVerificationPage, persistCredentials, readCredentials, selectStoredCredentials, validateCredentials, type DeviceCredentials } from "./device-enrollment";
-import { installManagedSentinel, invalidateManagedSentinel, managedSentinelIdentity } from "./managed-sentinel";
+import { installManagedSentinel, managedSentinelIdentity } from "./managed-sentinel";
 
 const MAX_SESSION_FIELD_LENGTH = 200;
 const MAX_CWD_LENGTH = 2_048;
@@ -111,7 +111,7 @@ type PublishedRoom = {
 
 class SessionBusRuntime {
   private consult: SessionConsult | undefined;
-  public invalidateSnapshot(): void { this.consult?.invalidate(); }
+  public invalidateConsultation(): void { this.consult?.invalidate(); }
 	private client: SessionBusClient<ExtensionTimer> | undefined;
 	private namingBinding: {
 		client: SessionBusClient<ExtensionTimer>;
@@ -298,16 +298,12 @@ class SessionBusRuntime {
 		this.setRuntimeTimeout = (callback, delayMs) => ctx.setTimeout(callback, delayMs);
     const consult = new SessionConsult(ctx, () => this.receiptContext === ctx &&
       ctx.sessionManager.getSessionId() === this.sessionId, {
-        allowSteer: configuration.value.allowSteer,
-        deliver: (text, delivery) => { invalidateManagedSentinel(); this.pi.sendUserMessage(text, { deliverAs: delivery }); },
+        deliver: (text, delivery) => { this.pi.sendUserMessage(text, { deliverAs: delivery }); },
       }, configuration.value.session.instanceId);
     this.consult = consult;
 		const client = new SessionBusClient({
 			allowSteer: configuration.value.allowSteer,
 			interactiveRoot: isRootInteractive(ctx),
-      sentinelInspectionAvailable: () => isRootInteractive(ctx) &&
-        typeof ctx.sessionManager.getEntries === "function" && typeof ctx.sessionManager.getBranch === "function" &&
-        typeof ctx.sessionManager.getLeafId === "function" && typeof ctx.getSystemPrompt === "function",
 			session: configuration.value.session,
 			machineKey: configuration.value.machineKey,
 			url: configuration.value.url,
@@ -340,7 +336,7 @@ class SessionBusRuntime {
 	}
 
 	public shutdown(): void {
-    this.invalidateSnapshot();
+    this.invalidateConsultation();
     this.consult = undefined;
 		this.bindingEpoch += 1;
 		this.cancelPairing();
@@ -501,7 +497,7 @@ class SessionBusRuntime {
 	}
 
 	public beginAgentRun(): void {
-    this.invalidateSnapshot();
+    this.invalidateConsultation();
 		this.completionCandidate = undefined;
 		this.completedNotificationId = undefined;
 		this.agentStartedAtMs = Date.now();
@@ -1145,8 +1141,11 @@ class SessionBusRuntime {
   }
 
 	private injectInboundMessage(message: AgentMessage): void {
-		invalidateManagedSentinel();
 		const content = formatExternalMessage(message);
+    if (message.from === "Sentinel review" && !message.triggerTurn && this.receiptContext && managedSentinelIdentity(this.receiptContext)) {
+      this.pi.sendMessage({ customType: "sentinel:summary", content, display: true }, { triggerTurn: false });
+      return;
+    }
 		if (message.triggerTurn && this.idle) {
 			this.pi.sendUserMessage(content);
 			return;
@@ -1332,12 +1331,12 @@ export default function sessionBusExtension(pi: ExtensionAPI): void {
 		}
 		startRuntimeAndRecoverAutomaticRoom(ctx, runtime);
 	});
-  pi.on("session_tree", () => runtime.invalidateSnapshot());
-  pi.on("session_compact", () => runtime.invalidateSnapshot());
+  pi.on("session_tree", () => runtime.invalidateConsultation());
+  pi.on("session_compact", () => runtime.invalidateConsultation());
 	pi.on("input", async (event, ctx) => {
 		if (event.source !== "interactive" ||
 			(event.text.trim().length === 0 && !event.images?.length)) return;
-    runtime.invalidateSnapshot();
+    runtime.invalidateConsultation();
 		await runtime.acknowledgeInteractiveInput(ctx);
 	});
 	pi.on("agent_start", (_event, ctx) => {

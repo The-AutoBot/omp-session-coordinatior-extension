@@ -68,7 +68,6 @@ export interface SessionBusClientOptions<TTimer> {
 	session: Omit<SessionDescriptor, "connectedAt">;
 	allowSteer: boolean;
 	interactiveRoot?: boolean;
-  sentinelInspectionAvailable?(): boolean;
 	timers: ManagedTimers<TTimer>;
 	onInboundMessage(message: AgentMessage): void | Promise<void>;
   onVoiceCommand?(command: VoiceHostCommand): void;
@@ -177,7 +176,6 @@ export class SessionBusClient<TTimer> {
   private readonly inputReceiptAvailable: SessionBusClientOptions<TTimer>["inputReceiptAvailable"];
   private inputReceiptsInFlight = 0;
   private readonly onInspect: SessionBusClientOptions<TTimer>["onInspect"];
-  private readonly optionsSentinelInspectionAvailable: SessionBusClientOptions<TTimer>["sentinelInspectionAvailable"];
   private readonly inspections = new Map<string, AbortController>();
   private readonly onRoomInputReceiptAvailable: SessionBusClientOptions<TTimer>["onRoomInputReceiptAvailable"];
 	private readonly timers: ManagedTimers<TTimer>;
@@ -220,7 +218,6 @@ export class SessionBusClient<TTimer> {
     this.onInputReceipt = options.onInputReceipt;
     this.inputReceiptAvailable = options.inputReceiptAvailable;
     this.onInspect = options.onInspect;
-    this.optionsSentinelInspectionAvailable = options.sentinelInspectionAvailable;
     this.onRoomInputReceiptAvailable = options.onRoomInputReceiptAvailable;
 		this.onStatusChange = options.onStatusChange;
 		this.onDiagnostic = options.onDiagnostic;
@@ -500,7 +497,6 @@ export class SessionBusClient<TTimer> {
 					session: { ...this.session, connectedAt: new Date().toISOString() },
           inputReceiptAvailable: !!this.onInputReceipt && this.inputReceiptAvailable?.() === true,
 					interactiveRoot: this.interactiveRoot,
-          sentinelInspectionAvailable: !!this.onInspect && this.optionsSentinelInspectionAvailable?.() === true,
 				});
 			} catch {
 				this.lastErrorCode = "registration-send-failed";
