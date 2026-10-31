@@ -54,6 +54,8 @@ The active coordinator can use `session_bus` with `{action:"history",to:"session
 
 Unsupported hosts return `unsupported_host`; native no-tools/model failures return `question_failed`. Answers exceeding 256,000 UTF-16 characters abort and return `answer_too_large`, never silently truncate. There is one concurrent question per target. Caller abort/timeout, disconnect, session change and shutdown cancel detached requests; no request is replayed after reconnect. Native-host and broker integration proof remains separate from source tests.
 
+Native consultations set `dedupeReply:false`: the public SDK otherwise deduplicates lines and silently caps `replyText` at 4 KiB, which can cut structured JSON mid-answer. The extension's existing 256,000-character streaming/final bound remains enforced; no output-token cap is imposed on transports that reject one. Already-running processes keep their loaded extension until a user-directed full restart/resume; concise Sentinel answers also fit their existing native reply budget.
+
 ### Sentinel native questions
 
 Version 0.7.0 removes context exports, snapshot cursors/checkpoints and private review generations. Machine-authenticated `sentinel_ask` forwards the same `{kind:"question"}` used by coordinator `session_bus.ask`: the target's public `runEphemeralTurn` runs with `tools:false`, cancellation and no main-conversation mutation. No separate Sentinel model evaluates exported context. Answers are untrusted self-assessments requiring evidence, not authority or proof of correctness.
@@ -129,4 +131,4 @@ Moved tests: `extension-collab-lifecycle.integration.test.ts`, `native-input-rec
 
 ## Release and licensing
 
-Source version `0.7.0` replaces Sentinel snapshot review with native target questions while retaining enrollment, normal room routing, receipts and accessible managed human chat. Publication and activation require the parent integration gate; source edits are not a published release. Installation never restarts ordinary users. No npm publishing workflow is required. This repository declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.
+Source version `0.7.1` preserves complete native consultation replies; `0.7.0` replaced Sentinel snapshot review with native target questions while retaining enrollment, normal room routing, receipts and accessible managed human chat. Publication and activation require the parent integration gate; source edits are not a published release. Installation never restarts ordinary users. No npm publishing workflow is required. This repository declares no license grant; public visibility and installability alone do not grant general redistribution or modification rights.
