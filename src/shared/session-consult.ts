@@ -4,13 +4,11 @@ const index = z.number().int().nonnegative();
 export const inspectOperationSchema = z.discriminatedUnion("kind", [
  z.object({ kind:z.literal('history'),entryIndex:index.default(0),offset:index.default(0),throughEntryCount:index.optional() }).strict(),
  z.object({ kind:z.literal('question'),question:z.string().min(1).max(16_000) }).strict(),
- z.object({ kind:z.literal('intervene'),expectedInstanceId:z.string().uuid(),text:z.string().min(1).max(16_000),delivery:z.literal('followUp'),expiresAt:z.number().int().positive(),source:z.literal('sentinel') }).strict(),
 ]);
 export const inspectResultSchema = z.discriminatedUnion('kind',[
  z.object({kind:z.literal('history'),sessionId,throughEntryCount:index,entryIndex:index,offset:index,text:z.string().max(32_000),next:z.object({entryIndex:index,offset:index}).strict().nullable()}).strict(),
  z.object({kind:z.literal('answer'),sessionId,text:z.string().max(256_000)}).strict(),
- z.object({kind:z.literal('intervention'),sessionId,delivered:z.literal(true)}).strict(),
- z.object({kind:z.literal('error'),code:z.enum(['unsupported_host','unavailable','cancelled','invalid_cursor','question_failed','answer_too_large','steering_disabled','expired'])}).strict(),
+ z.object({kind:z.literal('error'),code:z.enum(['unsupported_host','unavailable','cancelled','invalid_cursor','question_failed','answer_too_large','expired'])}).strict(),
 ]);
 export const inspectClientRequestSchema=z.object({type:z.literal('session_inspect'),requestId:z.string().uuid(),to:sessionId,operation:inspectOperationSchema}).strict();
 export const inspectClientResultSchema=z.object({type:z.literal('session_inspect_result'),requestId:z.string().uuid(),result:inspectResultSchema}).strict();

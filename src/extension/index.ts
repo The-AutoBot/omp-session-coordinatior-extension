@@ -297,9 +297,7 @@ class SessionBusRuntime {
 		this.clearRuntimeTimer = timer => ctx.clearTimer(timer);
 		this.setRuntimeTimeout = (callback, delayMs) => ctx.setTimeout(callback, delayMs);
     const consult = new SessionConsult(ctx, () => this.receiptContext === ctx &&
-      ctx.sessionManager.getSessionId() === this.sessionId, {
-        deliver: (text, delivery) => { this.pi.sendUserMessage(text, { deliverAs: delivery }); },
-      }, configuration.value.session.instanceId);
+      ctx.sessionManager.getSessionId() === this.sessionId);
     this.consult = consult;
 		const client = new SessionBusClient({
 			allowSteer: configuration.value.allowSteer,

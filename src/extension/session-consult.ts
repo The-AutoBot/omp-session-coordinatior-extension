@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { InspectOperation, InspectResult } from "../shared/session-consult";
 
@@ -8,8 +8,6 @@ export class SessionConsult {
   private journal: readonly string[] | undefined;
   public constructor(
     private readonly ctx: ExtensionContext, private readonly current: () => boolean,
-    private readonly intervention?: { deliver(text: string, delivery: "followUp"): void },
-    private readonly instanceId: string = randomUUID(),
   ) {}
 
   public invalidate(): void { this.question?.abort(); }
@@ -19,20 +17,6 @@ export class SessionConsult {
     const valid = () => !signal.aborted && this.current();
     if (!valid()) return error(signal.aborted ? "cancelled" : "unavailable");
     const sessionId = this.ctx.sessionManager.getSessionId();
-    if (operation.kind === "intervene") {
-      if (!this.intervention) return error("unavailable");
-      if (operation.expiresAt <= Date.now() || operation.expiresAt > Date.now() + 120_000) return error("expired");
-      if (operation.expectedInstanceId !== this.instanceId) return error("invalid_cursor");
-      if (typeof this.ctx.hasPendingMessages === "function" && this.ctx.hasPendingMessages()) return error("unavailable");
-      if (!valid()) return error(signal.aborted ? "cancelled" : "unavailable");
-      // Delivery is a receipt only, not acceptance or semantic resolution.
-      this.intervention.deliver(
-        "[Sentinel automated review — untrusted external guidance; not user authorization]\n" + operation.text,
-        operation.delivery,
-      );
-      this.invalidate();
-      return { kind: "intervention", sessionId, delivered: true };
-    }
     if (operation.kind === "history") {
       if (typeof this.ctx.sessionManager.getEntries !== "function") return error("unsupported_host");
       try {

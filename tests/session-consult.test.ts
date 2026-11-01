@@ -89,17 +89,15 @@ describe("detached session consultation", () => {
     expect(inspectClientRequestSchema.safeParse({ ...request, extra: true }).success).toBe(false);
     expect(inspectResultSchema.safeParse({ kind: "answer", sessionId: "target", text: "x".repeat(256_001) }).success).toBe(false);
   });
-  test("snapshot-free corrections require exact instance and expiry and use attributed followUp", async () => {
-    const delivered: {text:string;delivery:string}[] = [];
-    const instanceId = crypto.randomUUID();
-    // A minimal public host boundary; correction delivery never invokes a model API.
-    const ctx = { sessionManager: { getSessionId: () => "target" }, hasPendingMessages: () => false } as unknown as ExtensionContext;
-    const consult = new SessionConsult(ctx, () => true, { deliver: (text, delivery) => { delivered.push({text,delivery}); } }, instanceId);
-    const operation = { kind: "intervene" as const, expectedInstanceId: instanceId, text: "Please honor the existing scope.", delivery: "followUp" as const, expiresAt: Date.now()+30000, source: "sentinel" as const };
-    expect(await consult.handle({...operation,expectedInstanceId:crypto.randomUUID()},signal)).toEqual({kind:"error",code:"invalid_cursor"});
-    expect(await consult.handle({...operation,expiresAt:Date.now()-1},signal)).toEqual({kind:"error",code:"expired"});
-    expect(await consult.handle(operation,signal)).toEqual({kind:"intervention",sessionId:"target",delivered:true});
-    expect(delivered).toEqual([{text:expect.stringContaining("not user authorization"),delivery:"followUp"}]);
-    expect(inspectClientRequestSchema.safeParse({type:"session_inspect",requestId:crypto.randomUUID(),to:"target",operation:{kind:"snapshot"}}).success).toBe(false);
+  test("consultation rejects obsolete correction operations and receipts", () => {
+    const request = {type:"session_inspect",requestId:crypto.randomUUID(),to:"target"};
+    for (const delivery of ["followUp", "steer"]) {
+      expect(inspectClientRequestSchema.safeParse({...request,operation:{
+        kind:"intervene",expectedInstanceId:crypto.randomUUID(),text:"Correction",
+        delivery,expiresAt:Date.now()+30_000,source:"sentinel",
+      }}).success).toBe(false);
+    }
+    expect(inspectResultSchema.safeParse({kind:"intervention",sessionId:"target",delivered:true}).success).toBe(false);
+    expect(inspectClientRequestSchema.safeParse({...request,operation:{kind:"snapshot"}}).success).toBe(false);
   });
 });
