@@ -19,6 +19,7 @@ import {
 } from "../shared/protocol";
 import { type InputReceiptRequest, type InputReceiptResult, inputReceiptResultSchema } from "../shared/collab-input-receipts";
 import { inspectResultSchema, type InspectOperation, type InspectResult } from "../shared/session-consult";
+import type { SentinelCorrectionRequest, SentinelCorrectionStatus } from "../shared/sentinel-correction";
 
 const MAX_INBOX_MESSAGES = 100;
 const MAX_PROCESSED_MESSAGE_IDS = 512;
@@ -75,6 +76,8 @@ export interface SessionBusClientOptions<TTimer> {
   onInputReceipt?(request: InputReceiptRequest): Promise<InputReceiptResult>;
   inputReceiptAvailable?(): boolean;
   onInspect?(operation: InspectOperation, signal: AbortSignal): Promise<InspectResult>;
+  onCorrection?(request: SentinelCorrectionRequest): void;
+  onCorrectionCancel?(requestId: string): void;
   onRoomInputReceiptAvailable?(room: SessionRoom): Promise<boolean>;
 	onStatusChange?(status: SessionBusStatus): void;
 	onDiagnostic?(diagnostic: SessionBusDiagnostic): void;
@@ -176,6 +179,8 @@ export class SessionBusClient<TTimer> {
   private readonly inputReceiptAvailable: SessionBusClientOptions<TTimer>["inputReceiptAvailable"];
   private inputReceiptsInFlight = 0;
   private readonly onInspect: SessionBusClientOptions<TTimer>["onInspect"];
+  private readonly onCorrection: SessionBusClientOptions<TTimer>["onCorrection"];
+  private readonly onCorrectionCancel: SessionBusClientOptions<TTimer>["onCorrectionCancel"];
   private readonly inspections = new Map<string, AbortController>();
   private readonly onRoomInputReceiptAvailable: SessionBusClientOptions<TTimer>["onRoomInputReceiptAvailable"];
 	private readonly timers: ManagedTimers<TTimer>;
@@ -218,6 +223,8 @@ export class SessionBusClient<TTimer> {
     this.onInputReceipt = options.onInputReceipt;
     this.inputReceiptAvailable = options.inputReceiptAvailable;
     this.onInspect = options.onInspect;
+    this.onCorrection = options.onCorrection;
+    this.onCorrectionCancel = options.onCorrectionCancel;
     this.onRoomInputReceiptAvailable = options.onRoomInputReceiptAvailable;
 		this.onStatusChange = options.onStatusChange;
 		this.onDiagnostic = options.onDiagnostic;
@@ -497,6 +504,7 @@ export class SessionBusClient<TTimer> {
 					session: { ...this.session, connectedAt: new Date().toISOString() },
           inputReceiptAvailable: !!this.onInputReceipt && this.inputReceiptAvailable?.() === true,
 					interactiveRoot: this.interactiveRoot,
+          sentinelCorrectionAvailable: this.interactiveRoot && !!this.onCorrection,
 				});
 			} catch {
 				this.lastErrorCode = "registration-send-failed";
@@ -597,8 +605,20 @@ export class SessionBusClient<TTimer> {
 		this.handleServerFrame(parsed.data);
 	}
 
+  public correctionResult(requestId: string, status: SentinelCorrectionStatus): void {
+    if (!this.registered) return;
+    try { this.sendFrame({ type: "sentinel_correction_result", requestId, status }); } catch { /* disconnected bindings fail closed */ }
+  }
+
 	private handleServerFrame(frame: ServerFrame): void {
 		switch (frame.type) {
+      case "sentinel_correction_request":
+        if (this.interactiveRoot && this.onCorrection) this.onCorrection(frame);
+        else this.correctionResult(frame.requestId, "unsupported_host");
+        return;
+      case "sentinel_correction_cancel":
+        this.onCorrectionCancel?.(frame.requestId);
+        return;
       case "session_inspect_cancel":
         this.inspections.get(frame.requestId)?.abort();
         return;

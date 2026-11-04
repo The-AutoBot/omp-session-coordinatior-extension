@@ -2,6 +2,16 @@
 
 Standalone native OMP client extension extracted from the session coordinator server. Source TypeScript is the entrypoint; no build artifact, server checkout, OMP patch, or npm publication is required. The package remains `private: true`; that prevents npm publication, not direct GitHub installation.
 
+## Dedicated Sentinel corrections (0.10.0 source candidate)
+
+Authenticated broker requests use `sentinel_correction_request` / `sentinel_correction_cancel`; native registration advertises `sentinelCorrectionAvailable` only for the current root interactive binding. General steering remains opt-in and unchanged. Corrections retain their supplied text/authority/agent attribution; they are never converted into user-authored instructions.
+
+`context_admitted` means the exact live session/instance correction passed this extension's public native `context` hook before expiry. It does not mean later hooks, provider execution, model understanding or resolution. Enqueue is not admission. Cancelled, expired, replaced and unknown/replayed `sentinel:correction` entries are removed on every context build; unrelated messages are untouched. Pending and terminal IDs are bounded (256 per binding); a saturated binding fails closed.
+
+Old/no-capability sessions are unavailable and require explicit user-directed activation/restart; downloading source does not activate it. Existing processes and legacy queued generic corrections remain unchanged because historical user messages have no reliable correction identity/expiry.
+
+Native SDK18.15.0 feasibility was qualified using public custom-message sending and context filtering with a controlled, non-network provider boundary: the rejected marker was seen before filtering, absent afterward, and a retained marker survived. Main owns final source/integration gates. The opt-in actual-SDK regression is `OMP_NATIVE_CORRECTION_SDK=<installed-package-directory> bun test tests/sentinel-correction-native.test.ts`; it does not use a fake context fixture.
+
 ## Install, update and remove
 
 Use the official OMP plugin manager and Git on each PC. The standalone OMP executable embeds Bun for plugin installation; end users do not need a separate Bun installation. Install trusted code only: extensions run inside OMP, not in a sandbox.

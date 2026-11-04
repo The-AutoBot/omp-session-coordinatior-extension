@@ -4,6 +4,7 @@ import {
 } from "./machines";
 
 import { z } from "zod";
+import { sentinelCorrectionRequestSchema, sentinelCorrectionCancelSchema, sentinelCorrectionResultSchema } from "./sentinel-correction";
 import { inputReceiptRequestSchema, inputReceiptResultSchema } from "./collab-input-receipts";
 import {
   inspectClientRequestSchema, inspectClientResultSchema, inspectCancelSchema,
@@ -62,6 +63,7 @@ export const sessionDescriptorSchema = z.object({
   cwd: z.string().min(1).max(2_048),
   role: z.enum(SESSION_ROLES),
   managedAgent: z.literal("sentinel").optional(),
+  sentinelCorrectionAvailable: z.boolean().optional(),
   idle: z.boolean(),
   connectedAt: z.string().datetime(),
 });
@@ -330,6 +332,7 @@ export type VoiceHostCommand = z.infer<typeof voiceHostCommandSchema>;
 export type VoiceHostEvent = z.infer<typeof voiceHostEventSchema>;
 export type VoiceControlReply = z.infer<typeof voiceControlReplySchema>;
 export const clientFrameSchema = z.discriminatedUnion("type", [
+  sentinelCorrectionResultSchema,
   inspectClientRequestSchema,
   inspectClientResultSchema,
   inspectCancelSchema,
@@ -340,6 +343,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
       inputReceiptAvailable: z.boolean().optional(),
       interactiveRoot: z.boolean().optional(),
       sentinelInspectionAvailable: z.boolean().optional(),
+      sentinelCorrectionAvailable: z.boolean().optional(),
     })
     .strict(),
   z.object({ type: z.literal("list"), requestId: z.string().uuid() }),
@@ -378,6 +382,8 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
 ]);
 
 export const serverFrameSchema = z.discriminatedUnion("type", [
+  sentinelCorrectionRequestSchema,
+  sentinelCorrectionCancelSchema,
   inspectHostRequestSchema,
   inspectResponseSchema,
   inspectCancelSchema,

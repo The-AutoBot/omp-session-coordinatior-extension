@@ -1,6 +1,8 @@
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { SessionConsult } from "./session-consult";
+import { SentinelCorrection } from "./sentinel-correction";
+import type { SentinelCorrectionRequest } from "../shared/sentinel-correction";
 import type { InspectOperation, InspectResult } from "../shared/session-consult";
 import { deriveEnrolledRoomWebLink, discoverLocalCollabRoom, RegistryCommandError, type RegistryOutcome } from "./collab-registry";
 
@@ -111,6 +113,16 @@ type PublishedRoom = {
 
 class SessionBusRuntime {
   private consult: SessionConsult | undefined;
+  private correction: SentinelCorrection | undefined;
+  public filterCorrectionContext<T>(messages: T[], ctx: ExtensionContext): T[] {
+    if (!this.receiptContext || ctx.sessionManager !== this.receiptContext.sessionManager ||
+      ctx.sessionManager.getSessionId() !== this.sessionId || !isRootInteractive(ctx)) {
+      return messages.filter(message => !message || typeof message !== "object" ||
+        !("customType" in message) || message.customType !== "sentinel:correction");
+    }
+    return this.correction?.filter(messages) ?? messages.filter(message => !message ||
+      typeof message !== "object" || !("customType" in message) || message.customType !== "sentinel:correction");
+  }
   public invalidateConsultation(): void { this.consult?.invalidate(); }
 	private client: SessionBusClient<ExtensionTimer> | undefined;
 	private namingBinding: {
@@ -311,6 +323,10 @@ class SessionBusRuntime {
       onVoiceDisconnect: () => this.nativeVoice.close("closed"),
       onInputReceipt: request => this.nativeInputReceipt.handle(request),
       onInspect: (operation, signal) => consult.handle(operation, signal),
+      ...(isRootInteractive(ctx) ? {
+        onCorrection: (request: SentinelCorrectionRequest) => correction.request(request),
+        onCorrectionCancel: (requestId: string) => correction.cancel(requestId),
+      } : {}),
       inputReceiptAvailable: () => this.receiptContext === ctx && isRootInteractive(ctx) &&
         typeof ctx.sessionManager.getEntry === "function" && ctx.sessionManager.getSessionId() === this.sessionId,
       onRoomInputReceiptAvailable: room => this.nativeInputReceipt.verifyRoom(room.webLink),
@@ -322,6 +338,11 @@ class SessionBusRuntime {
 			onDiagnostic: diagnostic => this.logAutomaticCollab(
 				diagnostic.level, diagnostic.event, this.automaticCollabGeneration, diagnostic.fields),
 		});
+    const correction = new SentinelCorrection(this.pi, () => this.receiptContext === ctx &&
+      isRootInteractive(ctx) && ctx.sessionManager.getSessionId() === configuration.value.session.sessionId,
+      configuration.value.session.sessionId, configuration.value.session.instanceId,
+      (requestId, status) => client.correctionResult(requestId, status));
+    this.correction = correction;
 		this.client = client;
 		this.namingBinding = {
 			client, ctx, sessionId: this.sessionId, role: configuration.value.session.role,
@@ -334,6 +355,8 @@ class SessionBusRuntime {
 	}
 
 	public shutdown(): void {
+    this.correction?.close();
+    this.correction = undefined;
     this.invalidateConsultation();
     this.consult = undefined;
 		this.bindingEpoch += 1;
@@ -1370,7 +1393,7 @@ export default function sessionBusExtension(pi: ExtensionAPI): void {
 			event.signal,
 		);
 	});
-  pi.on("context", event => ({ messages: runtime.filterVoiceContext(event.messages) }));
+  pi.on("context", (event, ctx) => ({ messages: runtime.filterCorrectionContext(runtime.filterVoiceContext(event.messages), ctx) }));
   pi.on("message_start", event => runtime.voiceMessageStart(event.message));
   pi.on("message_end", event => runtime.voiceMessageEnd(event.message));
 	pi.on("agent_end", (event, ctx) => {
