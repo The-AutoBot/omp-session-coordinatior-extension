@@ -181,6 +181,7 @@ export class SessionBusClient<TTimer> {
   private readonly onInspect: SessionBusClientOptions<TTimer>["onInspect"];
   private readonly onCorrection: SessionBusClientOptions<TTimer>["onCorrection"];
   private readonly onCorrectionCancel: SessionBusClientOptions<TTimer>["onCorrectionCancel"];
+  private readonly pendingCorrections = new Set<string>();
   private readonly inspections = new Map<string, AbortController>();
   private readonly onRoomInputReceiptAvailable: SessionBusClientOptions<TTimer>["onRoomInputReceiptAvailable"];
 	private readonly timers: ManagedTimers<TTimer>;
@@ -244,6 +245,7 @@ export class SessionBusClient<TTimer> {
 		this.cancellationGeneration += 1;
     for (const controller of this.inspections.values()) controller.abort();
     this.inspections.clear();
+    this.cancelPendingCorrections();
 		this.terminalNotifications.clear();
 		if (this.stopped) {
 			this.room = null;
@@ -529,6 +531,7 @@ export class SessionBusClient<TTimer> {
 			} });
 			this.socket = undefined;
 			this.registered = false;
+      this.cancelPendingCorrections();
 			this.activeCoordinator = false;
       this.onVoiceDisconnect?.();
 			this.rejectAllPending("connection-closed");
@@ -606,6 +609,7 @@ export class SessionBusClient<TTimer> {
 	}
 
   public correctionResult(requestId: string, status: SentinelCorrectionStatus): void {
+    this.pendingCorrections.delete(requestId);
     if (!this.registered) return;
     try { this.sendFrame({ type: "sentinel_correction_result", requestId, status }); } catch { /* disconnected bindings fail closed */ }
   }
@@ -613,10 +617,14 @@ export class SessionBusClient<TTimer> {
 	private handleServerFrame(frame: ServerFrame): void {
 		switch (frame.type) {
       case "sentinel_correction_request":
-        if (this.interactiveRoot && this.onCorrection) this.onCorrection(frame);
-        else this.correctionResult(frame.requestId, "unsupported_host");
+        if (!this.registered || this.pendingCorrections.size >= MAX_PENDING_REQUESTS && !this.pendingCorrections.has(frame.requestId)) { this.correctionResult(frame.requestId, "unavailable"); return; }
+        if (this.interactiveRoot && this.onCorrection) {
+          this.pendingCorrections.add(frame.requestId);
+          try { this.onCorrection(frame); } catch { this.correctionResult(frame.requestId, "unavailable"); }
+        } else this.correctionResult(frame.requestId, "unsupported_host");
         return;
       case "sentinel_correction_cancel":
+        this.pendingCorrections.delete(frame.requestId);
         this.onCorrectionCancel?.(frame.requestId);
         return;
       case "session_inspect_cancel":
@@ -1038,7 +1046,13 @@ export class SessionBusClient<TTimer> {
     socket.send(JSON.stringify(event));
   }
 
+  private cancelPendingCorrections(): void {
+    for (const requestId of [...this.pendingCorrections]) this.onCorrectionCancel?.(requestId);
+    this.pendingCorrections.clear();
+  }
+
 	private closeCurrentSocket(): void {
+    this.cancelPendingCorrections();
 		const socket = this.socket;
 		if (socket === undefined || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) return;
 		try {

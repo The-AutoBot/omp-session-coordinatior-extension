@@ -2,11 +2,13 @@
 
 Standalone native OMP client extension extracted from the session coordinator server. Source TypeScript is the entrypoint; no build artifact, server checkout, OMP patch, or npm publication is required. The package remains `private: true`; that prevents npm publication, not direct GitHub installation.
 
-## Dedicated Sentinel corrections (0.10.0 source candidate)
+## Dedicated Sentinel corrections (0.10.1)
 
 Authenticated broker requests use `sentinel_correction_request` / `sentinel_correction_cancel`; native registration advertises `sentinelCorrectionAvailable` only for the current root interactive binding. General steering remains opt-in and unchanged. Corrections retain their supplied text/authority/agent attribution; they are never converted into user-authored instructions.
 
 `context_admitted` means the exact live session/instance correction passed this extension's public native `context` hook before expiry. It does not mean later hooks, provider execution, model understanding or resolution. Enqueue is not admission. Cancelled, expired, replaced and unknown/replayed `sentinel:correction` entries are removed on every context build; unrelated messages are untouched. Pending and terminal IDs are bounded (256 per binding); a saturated binding fails closed.
+
+Connection loss, local socket retirement and shutdown cancel every unacknowledged correction. Reconnecting never reauthorizes the old connection's queued payloads; admission also requires the current registered client binding.
 
 Old/no-capability sessions are unavailable and require explicit user-directed activation/restart; downloading source does not activate it. Existing processes and legacy queued generic corrections remain unchanged because historical user messages have no reliable correction identity/expiry.
 
@@ -91,7 +93,7 @@ CLI help and installer validation are not runtime/broker proof. The repository s
 
 Native question qualification is separate from source tests and publication. The owned normal-TUI premise proved the exact public side-turn API returned an answer with zero tool calls and unchanged main context; machine-route and deployment evidence require independent qualification. Existing ordinary sessions need no restart.
 
-Steering qualification must use an isolated native host and matching disposable broker: send an authenticated Sentinel correction to its exact current instance through the existing message channel with `delivery:"steer", triggerTurn:false` while a follow-up is pending, and observe native steering rather than deferred follow-up delivery. Repeat expired, cancelled and replaced-target requests and confirm no injection. Source tests and the protocol-peer smoke do not establish native queue behavior. Already-loaded extensions support this existing message route, so corrections require no user restart. Downloading 0.9.0 does not activate its cleanup in loaded processes; activation still requires a user-directed full restart/resume, never an automatic restart.
+Correction qualification must use an isolated native host and matching disposable broker through the dedicated correction request/result/cancel lane, including with general steering disabled. Observe the actual native context boundary, not generic socket acceptance; repeat expiry, cancellation, disconnection and replaced-target cases and confirm rejected text never reaches the controlled provider context. Existing generic-message and queued-user-message evidence is historical, not qualification of this lane. Downloading updated files does not reload existing processes: use a new session or a user-directed full restart/resume, never an automatic restart or `/reload`.
 
 ## Development verification
 

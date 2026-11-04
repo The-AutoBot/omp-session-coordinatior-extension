@@ -339,6 +339,7 @@ class SessionBusRuntime {
 				diagnostic.level, diagnostic.event, this.automaticCollabGeneration, diagnostic.fields),
 		});
     const correction = new SentinelCorrection(this.pi, () => this.receiptContext === ctx &&
+      this.client === client && client.getStatus().state === "registered" &&
       isRootInteractive(ctx) && ctx.sessionManager.getSessionId() === configuration.value.session.sessionId,
       configuration.value.session.sessionId, configuration.value.session.instanceId,
       (requestId, status) => client.correctionResult(requestId, status));
