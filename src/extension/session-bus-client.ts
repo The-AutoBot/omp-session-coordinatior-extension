@@ -20,9 +20,8 @@ import {
 import { type InputReceiptRequest, type InputReceiptResult, inputReceiptResultSchema } from "../shared/collab-input-receipts";
 import { inspectResultSchema, type InspectOperation, type InspectResult } from "../shared/session-consult";
 import type { SentinelCorrectionRequest, SentinelCorrectionStatus } from "../shared/sentinel-correction";
-import { managerOperationSchema, managerResultFrameSchema, managerActionFrameSchema, managerActionCancelFrameSchema, managerChangedSchema, managerBindProofSchema, type ManagerOperation, type ManagerResult } from "../shared/manager";
+import { managerOperationSchema, managerResultFrameSchema, managerBindProofSchema, type ManagerOperation, type ManagerResult } from "../shared/manager";
 import type { z } from "zod";
-import type { ManagerErrorCode } from "../shared/manager";
 
 const MAX_INBOX_MESSAGES = 100;
 const MAX_PROCESSED_MESSAGE_IDS = 512;
@@ -73,9 +72,6 @@ export interface SessionBusClientOptions<TTimer> {
 	allowSteer: boolean;
 	interactiveRoot?: boolean;
   managementIdentity?: { managerId: string; launchId: string };
-  onManagerAction?(frame: z.infer<typeof managerActionFrameSchema>): void;
-  onManagerCancel?(actionId: string): void;
-  onManagerChanged?(throughSequence: number): void;
 	timers: ManagedTimers<TTimer>;
 	onInboundMessage(message: AgentMessage): void | Promise<void>;
   onVoiceCommand?(command: VoiceHostCommand): void;
@@ -177,17 +173,12 @@ type HeaderCapableWebSocketConstructor = typeof WebSocket & {
 export class SessionBusClient<TTimer> {
   private managerPending = new Map<string, { resolve: (result: ManagerResult) => void; cancel: () => void }>();
   private managerConnectionId: string | undefined;
-  private readonly managerCallbacks: Pick<SessionBusClientOptions<TTimer>, "onManagerAction" | "onManagerCancel" | "onManagerChanged">;
   public managementConnectionId() { return this.registered ? this.managerConnectionId : undefined; }
   public managerProof(proof: z.infer<typeof managerBindProofSchema>): boolean {
     if (!this.registered || proof.connectionId !== this.managerConnectionId) return false;
     const checked = managerBindProofSchema.safeParse(proof);
     if (!checked.success || !this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
     this.socket.send(JSON.stringify(checked.data)); return true;
-  }
-  public managerActionResult(actionId: string, state: "admitted" | "rejected" | "unknown", code?: ManagerErrorCode): void {
-    if (this.registered) this.socket?.send(JSON.stringify({ type: "manager_action_result", actionId,
-      target: { pcId: this.session.pcId, sessionId: this.session.sessionId, instanceId: this.session.instanceId }, state, ...(code ? { code } : {}) }));
   }
   public managerRequest(raw: ManagerOperation, signal?: AbortSignal): Promise<ManagerResult> {
     const operation = managerOperationSchema.parse(raw);
@@ -264,7 +255,6 @@ export class SessionBusClient<TTimer> {
 	private handlingMessageIds = new Set<string>();
 
 	public constructor(options: SessionBusClientOptions<TTimer>) {
-    this.managerCallbacks = options;
 		this.allowSteer = options.allowSteer;
     this.managementIdentity = options.managementIdentity;
 		this.interactiveRoot = options.interactiveRoot === true;
@@ -634,12 +624,6 @@ export class SessionBusClient<TTimer> {
       if (wireBytes > 512 * 1024) { this.closeCurrentSocket(); return; }
       const result = managerResultFrameSchema.safeParse(rawFrame);
       if (result.success) { this.managerPending.get(result.data.requestId)?.resolve(result.data.result); return; }
-      const action = managerActionFrameSchema.safeParse(rawFrame);
-      if (action.success) { this.managerCallbacks.onManagerAction?.(action.data); return; }
-      const cancel = managerActionCancelFrameSchema.safeParse(rawFrame);
-      if (cancel.success && cancel.data.target.sessionId === this.session.sessionId && cancel.data.target.instanceId === this.session.instanceId && cancel.data.target.pcId === this.session.pcId) { this.managerCallbacks.onManagerCancel?.(cancel.data.actionId); return; }
-      const changed = managerChangedSchema.safeParse(rawFrame);
-      if (changed.success) this.managerCallbacks.onManagerChanged?.(changed.data.throughSequence);
       return;
     }
     if (typeof rawFrame === "object" && rawFrame !== null && "type" in rawFrame &&

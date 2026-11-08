@@ -7,10 +7,9 @@ import type { ExtensionAPI } from '@oh-my-pi/pi-coding-agent';
 import type { AgentMessage } from '@oh-my-pi/pi-agent-core';
 import type { Model } from '@oh-my-pi/pi-ai';
 import { ManagementInput } from '../src/extension/management-input';
-import { ManagerDelivery } from '../src/extension/manager-delivery';
 import { SentinelCorrection } from '../src/extension/sentinel-correction';
 
-test('real SDK collab prompts fence pending manager and Sentinel context without input events', async () => {
+test('real SDK collab prompts fence pending Sentinel context without input events', async () => {
   if (process.env.MANAGEMENT_INPUT_SDK_CHILD !== '1') {
     const root = await mkdtemp(join(tmpdir(), 'management-input-sdk-'));
     const child = Bun.spawn([process.execPath, '--no-env-file', 'test', fileURLToPath(import.meta.url)], {
@@ -42,24 +41,19 @@ test('real SDK collab prompts fence pending manager and Sentinel context without
   const historical = { customType: 'collab-prompt', content: 'Historical bounded request', display: true, attribution: 'user' as const, details: { from: 'Owned fixture' } };
   manager.appendCustomMessageEntry(historical.customType, historical.content, true, historical.details, 'user');
   const target = { pcId: 'owned', sessionId: manager.getSessionId(), instanceId: crypto.randomUUID() };
-  const managerReceipts: string[] = [], sentinelReceipts: string[] = [];
-  let inputs = 0, management!: ManagementInput, delivery!: ManagerDelivery, sentinel!: SentinelCorrection;
+  const sentinelReceipts: string[] = [];
+  let inputs = 0, management!: ManagementInput, sentinel!: SentinelCorrection;
   const model: Model<'owned-input-proof'> = { id: 'owned', name: 'owned', provider: 'owned-input-proof', api: 'owned-input-proof', compat: undefined, identity: { class: 'unknown' }, baseUrl: 'http://127.0.0.1:1', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 32 };
   stage = 'session_create'; console.log(`MANAGEMENT_INPUT_SDK_STAGE=${stage}`);
   const { session } = await sdk.createAgentSession({ cwd: root, agentDir: join(root, 'agent'), settings: sdk.Settings.isolated(), sessionManager: manager, model, getApiKey: async () => 'owned-no-secret', disableExtensionDiscovery: true, skills: [], rules: [], contextFiles: [], promptTemplates: [], slashCommands: [], enableMCP: false, enableLsp: false, toolNames: [], extensions: [(pi: ExtensionAPI) => {
     management = new ManagementInput(() => sentinel?.cancelPending());
     management.reset(manager.getEntries());
-    delivery = new ManagerDelivery(pi, target, () => ({ valid: management.available, inputRevision: management.revision, allowSteer: true, pendingToolApproval: false }), (id, state) => managerReceipts.push(`${id}:${state}`));
     sentinel = new SentinelCorrection(pi, () => management.available, target.sessionId, target.instanceId, (id, state) => sentinelReceipts.push(`${id}:${state}`));
     pi.on('input', () => { inputs++; management.advance(); });
     pi.on('message_start', event => { management.observe([event.message]); });
-    pi.on('context', event => { management.observe(event.messages); return { messages: sentinel.filter(delivery.filter(event.messages)) }; });
+    pi.on('context', event => { management.observe(event.messages); return { messages: sentinel.filter(event.messages) }; });
     pi.registerProvider(model.provider, { api: model.api, baseUrl: model.baseUrl, apiKey: 'owned-no-secret', models: [{ id: model.id, name: model.name, api: model.api, reasoning: model.reasoning, input: model.input, cost: model.cost, contextWindow: 32000, maxTokens: 32 }], streamSimple: forbidden });
   }] });
-  const frame = () => {
-    const now = Date.now(), assignmentId = crypto.randomUUID();
-    return { type: 'manager_action' as const, actor: 'manager' as const, expiresAt: now + 60000, assignment: { id: assignmentId, revision: 1, title: 'Owned', goal: 'Inspect only', constraints: 'No effects', acceptance: [], targets: [target], status: 'active' as const, createdAt: now, updatedAt: now }, action: { actionId: crypto.randomUUID(), assignmentId, assignmentRevision: 1, target, expectedInputRevision: management.revision, operation: { kind: 'instruction' as const, text: 'Owned delegated instruction', delivery: 'nextTurn' as const } } };
-  };
   const correction = () => ({ type: 'sentinel_correction_request' as const, requestId: crypto.randomUUID(), sessionId: target.sessionId, instanceId: target.instanceId, text: 'Owned correction', expiresAt: Date.now() + 60000 });
   try {
     await initializeExtensions(session, { reportSendError: forbidden, reportRuntimeError: forbidden });
@@ -70,8 +64,8 @@ test('real SDK collab prompts fence pending manager and Sentinel context without
     expect(management.revision).toBe(0);
     await runner.emitInput('Direct input positive control', undefined, 'interactive');
     expect(inputs).toBe(1); expect(management.revision).toBe(1);
-    const stale = frame(), staleCorrection = correction();
-    delivery.request(stale); sentinel.request(staleCorrection);
+    const staleCorrection = correction();
+    sentinel.request(staleCorrection);
     // Public queue-only path is real SDK behavior and must not execute a provider.
     stage = 'queue_context'; console.log(`MANAGEMENT_INPUT_SDK_STAGE=${stage}`);
     await session.promptCustomMessage({ ...historical, content: 'New direct collaboration input' }, { queueOnly: true, streamingBehavior: 'steer' });
@@ -79,22 +73,12 @@ test('real SDK collab prompts fence pending manager and Sentinel context without
     const queuedCollab = session.agent.peekSteeringQueue().find(message => 'customType' in message && message.customType === 'collab-prompt' && 'attribution' in message && message.attribution === 'user');
     expect(queuedCollab).toBeDefined();
     const collab = structuredClone(queuedCollab!);
-    const staleMessage: AgentMessage = { role: 'custom', customType: 'manager:instruction', content: stale.action.operation.text, display: true, attribution: 'agent', timestamp: Date.now(), details: { actionId: stale.action.actionId, assignmentId: stale.action.assignmentId, assignmentRevision: 1, actor: 'manager', assignmentSnapshot: { id: stale.assignment.id, revision: 1, title: stale.assignment.title, goal: stale.assignment.goal, constraints: stale.assignment.constraints, acceptance: stale.assignment.acceptance, target, inputRevision: stale.action.expectedInputRevision, expiresAt: stale.expiresAt } } };
     const correctionMessage: AgentMessage = { role: 'custom', customType: 'sentinel:correction', content: staleCorrection.text, display: true, timestamp: Date.now(), details: { requestId: staleCorrection.requestId, sessionId: target.sessionId, instanceId: target.instanceId } };
-    const context = await runner.emitContext(structuredClone([collab, staleMessage, correctionMessage]));
+    const context = await runner.emitContext(structuredClone([collab, correctionMessage]));
     expect(management.revision).toBe(2);
-    expect(context.some(message => 'customType' in message && message.customType === 'manager:instruction')).toBe(false);
     expect(context.some(message => 'customType' in message && message.customType === 'sentinel:correction')).toBe(false);
-    expect(managerReceipts).toContain(`${stale.action.actionId}:rejected`);
-    expect(managerReceipts).not.toContain(`${stale.action.actionId}:admitted`);
     expect(sentinelReceipts).toContain(`${staleCorrection.requestId}:cancelled`);
     await runner.emitContext(structuredClone([collab])); expect(management.revision).toBe(2);
-    const fresh = frame(); delivery.request(fresh);
-    const freshMessage = { ...staleMessage, details: { actionId: fresh.action.actionId, assignmentId: fresh.action.assignmentId, assignmentRevision: 1, actor: 'manager', assignmentSnapshot: { id: fresh.assignment.id, revision: 1, title: fresh.assignment.title, goal: fresh.assignment.goal, constraints: fresh.assignment.constraints, acceptance: fresh.assignment.acceptance, target, inputRevision: fresh.action.expectedInputRevision, expiresAt: fresh.expiresAt } } };
-    const admitted = await runner.emitContext(structuredClone([collab, freshMessage]));
-    expect(admitted.some(message => 'customType' in message && message.customType === 'manager:instruction')).toBe(true);
-    expect(managerReceipts).toContain(`${fresh.action.actionId}:admitted`);
-    expect(admitted).toContainEqual(collab);
     await session.promptCustomMessage({ ...historical, content: 'Second direct collaboration input' }, { queueOnly: true, streamingBehavior: 'steer' });
     const nextQueued = session.agent.peekSteeringQueue().find(message => 'customType' in message && message.customType === 'collab-prompt' && 'content' in message && message.content === 'Second direct collaboration input');
     expect(nextQueued).toBeDefined();
@@ -104,5 +88,5 @@ test('real SDK collab prompts fence pending manager and Sentinel context without
     await runner.emitContext(structuredClone([nextCollab]));
     expect(management.revision).toBe(3);
     console.log('MANAGEMENT_INPUT_SDK_PROOF=passed');
-  } finally { delivery?.close(); sentinel?.close(); await session.dispose(); }
+  } finally { sentinel?.close(); await session.dispose(); }
 }, 60000);

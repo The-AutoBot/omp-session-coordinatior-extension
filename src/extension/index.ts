@@ -30,8 +30,7 @@ import { NativeInputReceipt } from "./native-input-receipt";
 import { dashboardUrl, enrollDevice, explicitCredentials, openVerificationPage, persistCredentials, readCredentials, selectStoredCredentials, validateCredentials, type DeviceCredentials } from "./device-enrollment";
 import { installManagedSession, managedSentinelIdentity, managedSessionIdentity } from "./managed-session";
 import { attachManagerProof, consumeManagerProof } from "./managed-session";
-import { ManagerDelivery } from "./manager-delivery";
-import { ManagerWake, installSessionManager } from "./session-manager";
+import { ManagerSummaryTimer, installSessionManager } from "./session-manager";
 import type { ManagerOperation, ManagerResult } from "../shared/manager";
 import { ManagementInput } from "./management-input";
 
@@ -120,15 +119,13 @@ type PublishedRoom = {
 class SessionBusRuntime {
   private consult: SessionConsult | undefined;
   private correction: SentinelCorrection | undefined;
-  private delivery: ManagerDelivery | undefined;
-  private wake: ManagerWake | undefined;
+  private wake: ManagerSummaryTimer | undefined;
   private managerToolInstalled = false;
   public filterManagerContext<T>(messages: T[], ctx: ExtensionContext): T[] {
     if (!this.acceptsLifecycle(ctx)) return messages.filter(m => !m || typeof m !== "object" || !("customType" in m) ||
       !["manager:instruction", "manager:assignment-snapshot", "manager:update"].includes(String(m.customType)));
-    const delivered = this.delivery ? this.delivery.filter(messages) : messages.filter(m => !m || typeof m !== "object" ||
-      !("customType" in m) || !["manager:instruction", "manager:assignment-snapshot"].includes(String(m.customType)));
-    return this.wake?.filter(delivered) ?? delivered;
+    return this.wake?.filter(messages) ?? messages.filter(m => !m || typeof m !== "object" ||
+      !("customType" in m) || !["manager:instruction", "manager:assignment-snapshot", "manager:update"].includes(String(m.customType)));
   }
   public managerRequest(operation: ManagerOperation, signal?: AbortSignal): Promise<ManagerResult> {
     return this.client?.managerRequest(operation, signal) ?? Promise.resolve({ ok: false, code: "manager_unavailable" });
@@ -353,9 +350,6 @@ class SessionBusRuntime {
       onVoiceDisconnect: () => this.nativeVoice.close("closed"),
       onInputReceipt: request => this.nativeInputReceipt.handle(request),
       onInspect: (operation, signal) => consult.handle(operation, signal),
-      onManagerAction: frame => this.delivery?.request(frame),
-      onManagerCancel: id => this.delivery?.cancel(id),
-      onManagerChanged: sequence => this.wake?.changed(sequence),
       ...(isRootInteractive(ctx) ? {
         onCorrection: (request: SentinelCorrectionRequest) => correction.request(request),
         onCorrectionCancel: (requestId: string) => correction.cancel(requestId),
@@ -366,7 +360,7 @@ class SessionBusRuntime {
 			onStatusChange: status => {
 				if (this.namingBinding?.client === client && this.acceptsLifecycle(ctx)) {
 					this.handleClientStatus(status, ctx);
-          if (status.state !== "registered") { this.delivery?.close(); this.wake?.disconnected(); }
+          if (status.state !== "registered") this.wake?.disconnected();
           if (status.state === "registered") {
             attachManagerProof(challenge => {
               const sent = client.managerProof({ type: "manager_bind_proof", challengeId: challenge.challengeId, connectionId: challenge.connectionId, nonce: challenge.nonce });
@@ -403,15 +397,9 @@ class SessionBusRuntime {
     this.correction = correction;
 		this.client = client;
     const target = { pcId: configuration.value.session.pcId, sessionId: configuration.value.session.sessionId, instanceId: configuration.value.session.instanceId };
-    this.delivery = new ManagerDelivery(this.pi, target, () => ({
-      valid: this.receiptContext === ctx && this.client === client && client.getStatus().state === "registered" && isRootInteractive(ctx) && this.managementInput.available && ctx.sessionManager.getSessionId() === target.sessionId,
-      inputRevision: this.managementInput.revision, allowSteer: configuration.value.allowSteer, pendingToolApproval: this.pendingToolApprovals.size > 0,
-    }), (id, state, code) => client.managerActionResult(id, state, code),
-      ctx.sessionManager.getEntries().flatMap(entry => entry.type === "custom" && entry.customType === "manager:delivery-state" ? [entry.data] : []),
-      record => this.pi.appendEntry("manager:delivery-state", record));
     const manager = managedSessionIdentity(ctx);
     if (manager?.managedAgent === "manager" && manager.managerId) {
-      this.wake = new ManagerWake(this.pi, ctx, manager.managerId, target.instanceId,
+      this.wake = new ManagerSummaryTimer(this.pi, ctx, manager.managerId, target.instanceId,
         () => this.client === client && this.acceptsLifecycle(ctx) && client.getStatus().state === "registered", operation => client.managerRequest(operation));
       if (!this.managerToolInstalled) {
         installSessionManager(this.pi, () => !!this.receiptContext && managedSessionIdentity(this.receiptContext)?.managedAgent === "manager",
@@ -432,7 +420,6 @@ class SessionBusRuntime {
 
 	public shutdown(): void {
     attachManagerProof(undefined);
-    this.delivery?.close(); this.delivery = undefined;
     this.wake?.close(); this.wake = undefined;
     this.correction?.close();
     this.correction = undefined;
@@ -1446,8 +1433,10 @@ export default function sessionBusExtension(pi: ExtensionAPI): void {
 	});
   pi.on("session_tree", () => runtime.invalidateConsultation());
   pi.on("session_compact", () => runtime.invalidateConsultation());
-  pi.on("before_agent_start", (_event, ctx) => {
+  pi.on("before_agent_start", (event, ctx) => {
     if (runtime.acceptsLifecycle(ctx)) runtime.reconcileManagerTurn();
+    if (runtime.acceptsLifecycle(ctx) && managedSessionIdentity(ctx)?.managedAgent === "manager")
+      return { systemPrompt: [...event.systemPrompt, "Manager is normal human chat with one read-only 30-minute changes summary. All earlier Manager assignment, task coordination, steering, worker-answer and event-wake policies are retired. Never act on historical manager:update envelopes or stored assignment instructions. session_manager is read-only; only a direct human request may ask an informational session question."] };
   });
 	pi.on("input", async (event, ctx) => {
     runtime.observeExternalInput(ctx);

@@ -10,9 +10,7 @@ import {
   inspectHostRequestSchema, inspectResponseSchema,
 } from "./session-consult";
 import { sentinelCorrectionRequestSchema, sentinelCorrectionCancelSchema, sentinelCorrectionResultSchema } from "./sentinel-correction";
-import { managementStateSchema, managerRequestSchema, managerCancelSchema, managerBindProofSchema,
-  managerActionResultFrameSchema, managerResultFrameSchema, managerActionFrameSchema,
-  managerActionCancelFrameSchema, managerChangedSchema } from "./manager";
+import { managementStateSchema, managerRequestSchema, managerCancelSchema, managerBindProofSchema, managerResultFrameSchema } from "./manager";
 
 export const SESSION_ROLES = ["coordinator", "participant"] as const;
 export const DELIVERY_MODES = ["followUp", "nextTurn", "steer"] as const;
@@ -339,7 +337,6 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   managerRequestSchema,
   managerCancelSchema,
   managerBindProofSchema,
-  managerActionResultFrameSchema,
   sentinelCorrectionResultSchema,
   inspectClientRequestSchema,
   inspectClientResultSchema,
@@ -402,9 +399,6 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
 
 export const serverFrameSchema = z.discriminatedUnion("type", [
   managerResultFrameSchema,
-  managerActionFrameSchema,
-  managerActionCancelFrameSchema,
-  managerChangedSchema,
   sentinelCorrectionRequestSchema,
   sentinelCorrectionCancelSchema,
   inspectHostRequestSchema,
