@@ -25,20 +25,17 @@ export class ManagerSummaryTimer {
   private active = false;
   private due: number | undefined;
   private skippedWindow = false;
-  private uncertain = false;
   private through = 0;
   private generation = 0;
   private controller: AbortController | undefined;
   private prompt: string | undefined;
   constructor(private pi: ExtensionAPI, private ctx: ExtensionContext, private managerId: string, private instanceId: string,
     private current: () => boolean, private request: (operation: ManagerOperation) => Promise<ManagerResult>, private now = Date.now) {
-    let last: z.infer<typeof stateSchema> | undefined;
     for (const entry of ctx.sessionManager.getEntries()) {
       if (entry.type !== 'custom' || entry.customType !== 'manager:summary-state') continue;
       const parsed = stateSchema.safeParse(entry.data);
-      if (parsed.success && parsed.data.managerId === managerId) { last = parsed.data; this.through = Math.max(this.through, parsed.data.to); }
+      if (parsed.success && parsed.data.managerId === managerId) this.through = Math.max(this.through, parsed.data.to);
     }
-    this.uncertain = last?.phase === 'intent';
   }
   async reconcile(humanTurn = false): Promise<void> {
     if (humanTurn) this.interrupt();
@@ -73,7 +70,7 @@ export class ManagerSummaryTimer {
     this.pi.sendMessage({ customType: 'manager:summary', content, display: true, attribution: 'agent' }, { triggerTurn: false, deliverAs: 'followUp' });
   }
   private async review(): Promise<void> {
-    if (this.closed || !this.ready || !this.current() || this.active || this.uncertain || this.due === undefined || !this.ctx.isIdle() || this.ctx.hasPendingMessages()) return;
+    if (this.closed || !this.ready || !this.current() || this.active || this.due === undefined || !this.ctx.isIdle() || this.ctx.hasPendingMessages()) return;
     const to = this.due, from = to - MANAGER_REVIEW_MS;
     if (to <= this.through) { this.due = undefined; return; }
     this.active = true; this.due = undefined;
@@ -105,7 +102,7 @@ export class ManagerSummaryTimer {
       if (!valid()) return;
       const id = `${this.managerId}:${to}`, at = this.now();
       this.pi.appendEntry('manager:summary-state', { managerId: this.managerId, phase: 'intent', id, at, from, to });
-      this.uncertain = true; this.through = to;
+      this.through = to;
       if (!count) {
         const coverage = gaps.join(' ');
         this.post(gaps.length ? `Last 30 minutes: no changes confirmed; coverage limited. ${coverage.slice(0, 480)}${coverage.length > 480 ? ' [Further gaps omitted.]' : ''}` : 'Last 30 minutes: no session changes.');
@@ -122,8 +119,7 @@ export class ManagerSummaryTimer {
         this.post(result.replyText);
       }
       this.pi.appendEntry('manager:summary-state', { managerId: this.managerId, phase: 'settled', id, at, from, to });
-      this.uncertain = false;
-    } catch { /* Unknown model or native message admission is never automatically replayed. */ }
+    } catch { /* The durable window fence prevents replay, without disabling later windows. */ }
     finally { this.prompt = undefined; this.controller = undefined; this.active = false; }
   }
   disconnected(): void { this.ready = false; this.due = undefined; this.interrupt(); if (this.timer) this.ctx.clearTimer(this.timer); this.timer = undefined; }

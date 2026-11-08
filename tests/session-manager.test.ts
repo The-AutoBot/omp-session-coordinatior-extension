@@ -66,14 +66,36 @@ test('exclusive end boundary rejected and incomplete no-change coverage does not
   try { await f.wake.reconcile(); await f.tick(); expect(f.calls).toBe(0); expect(f.sent[0]!.message.content).toContain('invalid window'); } finally { f.wake.close(); }
 });
 
-test('unknown admission survives reconnect and human input without automatic replay', async () => {
+test('unknown prior window is never replayed but later half-hour windows continue', async () => {
   const f = fixture({ unknown: true, changes: true });
-  try { await f.wake.reconcile(); await f.tick(); f.wake.disconnected(); await f.wake.reconcile(true); await f.tick(); expect(f.calls).toBe(0); expect(f.sent).toEqual([]); } finally { f.wake.close(); }
+  try {
+    const oldEnd = f.now;
+    await f.wake.reconcile(true); await f.flush();
+    expect(f.calls).toBe(0); expect(f.sent).toEqual([]);
+    await f.tick(); expect(f.calls).toBe(1);
+    f.wake.disconnected(); await f.wake.reconcile(true); await f.flush();
+    expect(f.calls).toBe(1);
+    await f.tick(); expect(f.calls).toBe(2);
+    expect(f.operations.filter(o => o.kind === 'changes').map(o => ({ from: o.from, to: o.to }))).toEqual([
+      { from: oldEnd, to: oldEnd + MANAGER_REVIEW_MS },
+      { from: oldEnd + MANAGER_REVIEW_MS, to: oldEnd + MANAGER_REVIEW_MS * 2 },
+    ]);
+  } finally { f.wake.close(); }
 });
 
-test('single active summary; human input abort/fence never publishes or replays uncertain outcome', async () => {
+test('single active summary fences interrupted output without disabling later due windows', async () => {
   const f = fixture({ changes: true });
-  try { f.hold(); await f.wake.reconcile(); await f.tick(); expect(f.calls).toBe(1); await f.tick(); expect(f.calls).toBe(1); await f.wake.reconcile(true); f.release(); await f.flush(); expect(f.sent).toEqual([]); f.wake.idle(); await f.flush(); expect(f.calls).toBe(1); } finally { f.wake.close(); }
+  try {
+    f.hold(); await f.wake.reconcile(); await f.tick(); expect(f.calls).toBe(1);
+    await f.tick(); expect(f.calls).toBe(1);
+    await f.wake.reconcile(true); f.release(); await f.flush(); expect(f.sent).toEqual([]);
+    f.wake.idle(); await f.flush(); expect(f.calls).toBe(2); expect(f.sent).toHaveLength(1);
+    const windows = f.operations.filter(o => o.kind === 'changes').map(o => ({ from: o.from, to: o.to }));
+    expect(windows).toEqual([
+      { from: MANAGER_REVIEW_MS * 2, to: MANAGER_REVIEW_MS * 3 },
+      { from: MANAGER_REVIEW_MS * 3, to: MANAGER_REVIEW_MS * 4 },
+    ]);
+  } finally { f.wake.close(); }
 });
 
 test('disconnect discards pending tick and new binding waits full interval; stale ownership emits nothing', async () => {
