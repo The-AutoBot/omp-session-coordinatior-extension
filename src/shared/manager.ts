@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { inspectOperationSchema, inspectResultSchema } from "./session-consult";
+import { notificationSnapshotSchema } from "./notification-schema";
 
 const uuid = z.string().uuid();
 const epoch = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -34,11 +35,14 @@ export const managerSnapshotSchema = z.object({ manager: z.object({ id: uuid.nul
 export type ManagerSnapshot = z.infer<typeof managerSnapshotSchema>;
 const managerChangesFields = { from: epoch, to: epoch, cursor: z.string().max(2048).optional(), limit: z.number().int().min(1).max(100) };
 const managerChangesResultSchema = z.object({ kind: z.literal("changes"), sessionId, from: epoch, to: epoch, entries: z.array(z.object({ at: epoch, text: z.string().max(8000) }).strict()).max(100), nextCursor: z.string().max(2048).nullable(), truncated: z.boolean(), coverage: z.object({ from: epoch, to: epoch, complete: z.boolean(), gaps: z.array(z.string().max(256)).max(16) }).strict() }).strict();
+export const managerNotificationSchema = notificationSnapshotSchema.extend({ title: z.string().max(200), body: z.string().max(1000) }).strict();
+export type ManagerNotification = z.infer<typeof managerNotificationSchema>;
 export const managerOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("status") }).strict(),
   z.object({ kind: z.literal("list"), cursor: z.string().max(2048).optional() }).strict(),
   z.object({ kind: z.literal("inspect"), target: managerTargetSchema, operation: inspectOperationSchema }).strict(),
   z.object({ kind: z.literal("changes"), target: managerTargetSchema, ...managerChangesFields }).strict().refine(value => value.to >= value.from && value.to - value.from <= 1800000, "Invalid changes window"),
+  z.object({ kind: z.literal("notifications"), from: epoch, to: epoch, limit: z.number().int().min(1).max(100).default(50), cursor: z.string().min(1).max(2048).optional() }).strict().refine(value => value.to >= value.from && value.to <= Date.now(), "Invalid notifications window"),
 ]);
 export type ManagerOperation = z.infer<typeof managerOperationSchema>;
 export const managerValueSchema = z.discriminatedUnion("kind", [
@@ -46,6 +50,7 @@ export const managerValueSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("list"), page: managerPageSchema(managerSessionStatusSchema) }).strict(),
   z.object({ kind: z.literal("inspect"), result: inspectResultSchema }).strict(),
   z.object({ kind: z.literal("changes"), target: managerTargetSchema, result: managerChangesResultSchema }).strict(),
+  z.object({ kind: z.literal("notifications"), page: z.object({ items: z.array(managerNotificationSchema).max(100), nextCursor: z.string().min(1).max(2048).nullable() }).strict(), coverage: z.object({ from: epoch, to: epoch, complete: z.boolean(), gaps: z.array(z.string().max(256)).max(16) }).strict() }).strict(),
 ]);
 export const managerResultSchema = z.discriminatedUnion("ok", [z.object({ ok: z.literal(true), value: managerValueSchema }).strict(), z.object({ ok: z.literal(false), code: managerErrorCodeSchema }).strict()]);
 export type ManagerResult = z.infer<typeof managerResultSchema>;

@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from '@oh-my-pi/pi-coding-agent';
 import { installSessionManager, ManagerSummaryTimer, MANAGER_REVIEW_MS } from '../src/extension/session-manager';
 import { managerOperationSchema, type ManagerOperation, type ManagerResult } from '../src/shared/manager';
 
-function fixture(options: { entries?: unknown[]; changes?: boolean; partial?: boolean; unknown?: boolean } = {}) {
+function fixture(options: { entries?: unknown[]; changes?: boolean; partial?: boolean; unknown?: boolean; notifications?: boolean; listUnavailable?: boolean; inboxUnavailable?: boolean; notificationAt?: number } = {}) {
   const managerId = crypto.randomUUID(), instanceId = crypto.randomUUID();
   const target = { pcId: 'owned', sessionId: 'worker', instanceId: crypto.randomUUID() };
   let now = MANAGER_REVIEW_MS * 2, busy = false, pending = false, current = true;
@@ -26,7 +26,12 @@ function fixture(options: { entries?: unknown[]; changes?: boolean; partial?: bo
   const request = async (operation: ManagerOperation): Promise<ManagerResult> => {
     operations.push(operation);
     if (operation.kind === 'status') return { ok: true, value: { kind: 'status', snapshot: { manager: { id: managerId, hostPcId: 'owned', lifecycle: 'online', binding: { managerId, hostPcId: 'owned', launchId: crypto.randomUUID(), sessionId: 'manager', instanceId, generation: 1 } }, observedAt: now } } };
-    if (operation.kind === 'list') return { ok: true, value: { kind: 'list', page: { items: [{ target, name: 'Worker', managedAgent: undefined }], total: 1, nextCursor: null } } } as ManagerResult;
+    if (operation.kind === 'notifications') {
+      if (options.inboxUnavailable) return { ok: false, code: 'storage_unavailable' };
+      const item = { notificationId: crypto.randomUUID(), pcId: 'owned', sessionId: 'offline-worker', sessionLabel: 'Offline Worker', sessionName: 'Offline Worker', sessionRole: 'participant', createdAt: new Date(options.notificationAt ?? operation.from).toISOString(), kind: 'blocked', title: 'ALERT_MARKER', body: 'Needs review', readAt: new Date(operation.from).toISOString(), turnNumber: null, durationMs: null, outcome: null, inputType: null };
+      return { ok: true, value: { kind: 'notifications', page: { items: options.notifications ? [item, item] : [], nextCursor: options.partial ? 'opaque-more' : null }, coverage: { from: operation.from, to: operation.to, complete: !options.partial, gaps: options.partial ? ['Retention may omit older receipts'] : [] } } } as ManagerResult;
+    }
+    if (operation.kind === 'list') return options.listUnavailable ? { ok: false, code: 'runtime_unavailable' } : { ok: true, value: { kind: 'list', page: { items: [{ target, name: 'Worker', managedAgent: undefined }], total: 1, nextCursor: null } } } as ManagerResult;
     if (operation.kind === 'changes') return { ok: true, value: { kind: 'changes', target, result: { kind: 'changes', sessionId: target.sessionId, from: operation.from, to: operation.to, entries: options.entries ?? (options.changes ? [{ at: operation.from, text: 'IN_WINDOW' }] : []), nextCursor: null, truncated: !!options.partial, coverage: { from: operation.from, to: operation.to, complete: !options.partial, gaps: options.partial ? ['Some entries omitted'] : [] } } } } as ManagerResult;
     throw Error('unexpected_operation');
   };
@@ -106,4 +111,53 @@ test('disconnect discards pending tick and new binding waits full interval; stal
 test('empty partial window posts bounded unavailable notice without inference', async () => {
   const f = fixture({ partial: true });
   try { await f.wake.reconcile(); await f.tick(); expect(f.calls).toBe(0); expect(f.sent[0]!.message.content).toContain('no changes confirmed; coverage limited'); expect(f.sent[0]!.message.content.length).toBeLessThan(600); } finally { f.wake.close(); }
+});
+
+test('notification-only offline summary deduplicates alerts and discloses retention without acknowledgement', async () => {
+  const f = fixture({ notifications: true, listUnavailable: true, partial: true });
+  try {
+    await f.wake.reconcile(); f.busy = true; await f.tick(); const end = f.now; f.advance(60000); f.busy = false; f.wake.idle(); await f.flush();
+    expect(f.calls).toBe(1); expect(f.sent).toHaveLength(1);
+    expect(f.operations.filter(o => o.kind === 'notifications')).toEqual([{ kind: 'notifications', from: end - MANAGER_REVIEW_MS, to: end, limit: 100 }]);
+    const text = JSON.stringify(f.contexts);
+    expect(text.match(/ALERT_MARKER/g)).toHaveLength(1);
+    for (const marker of ['Offline Worker', 'Retention may omit', 'Session list unavailable', 'more retained alerts', 'not proof of task completion', 'receipt time']) expect(text).toContain(marker);
+    expect(f.operations.every(o => ['status', 'notifications', 'list'].includes(o.kind))).toBe(true);
+    expect(f.sent[0]!.options.triggerTurn).toBe(false);
+  } finally { f.wake.close(); }
+});
+
+test('unavailable inbox and exclusive-end receipts disclose gaps without provider calls', async () => {
+  for (const options of [{ inboxUnavailable: true }, { notifications: true, notificationAt: MANAGER_REVIEW_MS * 3 }]) {
+    const f = fixture(options);
+    try { await f.wake.reconcile(); await f.tick(); expect(f.calls).toBe(0); expect(f.sent[0]!.message.content).toContain('coverage limited'); expect(f.sent[0]!.message.content).toContain('Notification inbox'); } finally { f.wake.close(); }
+  }
+});
+
+test('human read tool preserves historical notification window and opaque pagination without side effects', async () => {
+  let tool: Parameters<ExtensionAPI['registerTool']>[0] | undefined;
+  const operations: ManagerOperation[] = [];
+  const result: ManagerResult = { ok: true, value: { kind: 'notifications', page: { items: [], nextCursor: 'next-opaque' }, coverage: { from: 0, to: MANAGER_REVIEW_MS * 4, complete: false, gaps: ['Retention limited'] } } };
+  installSessionManager({ registerTool(value: Parameters<ExtensionAPI['registerTool']>[0]) { tool = value; } } as unknown as ExtensionAPI, () => true, async operation => { operations.push(operation); return result; });
+  const operation: Extract<ManagerOperation, { kind: 'notifications' }> = { kind: 'notifications', from: 0, to: MANAGER_REVIEW_MS * 4, limit: 50, cursor: 'opaque-owner-bound' };
+  const response = await tool!.execute('human', operation, new AbortController().signal, undefined, {} as ExtensionContext);
+  expect(operations).toEqual([operation]);
+  expect(response.details).toEqual(result);
+  for (const invalid of [
+    { ...operation, from: -1 }, { ...operation, from: Number.NaN }, { ...operation, to: Number.MAX_SAFE_INTEGER + 1 },
+    { ...operation, to: Date.now() + 60000 }, { ...operation, from: operation.to + 1 },
+    { ...operation, limit: 101 }, { ...operation, limit: 1.5 }, { ...operation, acknowledge: true },
+  ]) expect(managerOperationSchema.safeParse(invalid).success).toBe(false);
+});
+
+test('session changes and notification signals share one bounded scheduled model call', async () => {
+  const f = fixture({ changes: true, notifications: true });
+  try {
+    await f.wake.reconcile(); await f.tick();
+    expect(f.calls).toBe(1); expect(f.sent).toHaveLength(1);
+    const text = JSON.stringify(f.contexts);
+    expect(text).toContain('IN_WINDOW'); expect(text).toContain('ALERT_MARKER');
+    expect(text).toContain('5 short bullets'); expect(text).toContain('maximum 120 words');
+    expect(f.contexts[0]).toHaveLength(1);
+  } finally { f.wake.close(); }
 });

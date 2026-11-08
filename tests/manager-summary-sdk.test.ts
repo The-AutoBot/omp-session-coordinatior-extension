@@ -9,10 +9,11 @@ import { resolveModelPolicy } from '@oh-my-pi/pi-catalog/compat/resolve';
 import { ManagerSummaryTimer, MANAGER_REVIEW_MS } from '../src/extension/session-manager';
 import type { ManagerOperation, ManagerResult } from '../src/shared/manager';
 
-test('actual SDK summary request excludes historical conversation and tools; display-only result reaches canonical journal', async () => {
+test.each(['session-and-notification', 'notification-only'])('actual SDK %s summary isolates history and tools; visible result reaches canonical journal', async mode => {
+  if (process.env.MANAGER_SUMMARY_SDK_CHILD === '1' && process.env.MANAGER_SUMMARY_SDK_MODE !== mode) return;
   if (process.env.MANAGER_SUMMARY_SDK_CHILD !== '1') {
     const root = await mkdtemp(join(tmpdir(), 'manager-summary-sdk-'));
-    const child = Bun.spawn([process.execPath, '--no-env-file', 'test', fileURLToPath(import.meta.url)], { env: { ...process.env, MANAGER_SUMMARY_SDK_CHILD: '1', MANAGER_SUMMARY_SDK_ROOT: root, HOME: root, USERPROFILE: root, PI_CONFIG_DIR: root, PI_CODING_AGENT_DIR: join(root, 'agent') }, stdout: 'pipe', stderr: 'pipe' });
+    const child = Bun.spawn([process.execPath, '--no-env-file', 'test', fileURLToPath(import.meta.url)], { env: { ...process.env, MANAGER_SUMMARY_SDK_CHILD: '1', MANAGER_SUMMARY_SDK_MODE: mode, MANAGER_SUMMARY_SDK_ROOT: root, HOME: root, USERPROFILE: root, PI_CONFIG_DIR: root, PI_CODING_AGENT_DIR: join(root, 'agent') }, stdout: 'pipe', stderr: 'pipe' });
     try {
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
       expect(code, `${stdout}\n${stderr}`).toBe(0);
@@ -27,7 +28,7 @@ test('actual SDK summary request excludes historical conversation and tools; dis
   const sdk = await import('@oh-my-pi/pi-coding-agent');
   const { initializeExtensions } = await import('@oh-my-pi/pi-coding-agent/modes/runtime-init');
   const originalFetch = globalThis.fetch;
-  const payloads: unknown[] = [], hookPayloads: unknown[] = [];
+  const payloads: unknown[] = [], hookPayloads: unknown[] = [], operations: ManagerOperation[] = [];
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     payloads.push(await request.json());
     const chunk = (content: string, finish: string | null) => ({ id: 'owned-local', object: 'chat.completion.chunk', created: 1, model: 'owned', choices: [{ index: 0, delta: content ? { role: 'assistant', content } : {}, finish_reason: finish }] });
@@ -47,8 +48,10 @@ test('actual SDK summary request excludes historical conversation and tools; dis
   const managerId = crypto.randomUUID(), instanceId = crypto.randomUUID(), target = { pcId: 'owned', sessionId: 'worker', instanceId: crypto.randomUUID() };
   const now = MANAGER_REVIEW_MS * 3;
   const request = async (operation: ManagerOperation): Promise<ManagerResult> => {
+    operations.push(operation);
+    if (operation.kind === 'notifications') return { ok: true, value: { kind: 'notifications', page: { items: [{ notificationId: crypto.randomUUID(), pcId: 'owned', sessionId: 'offline', sessionLabel: 'Offline Worker', sessionName: 'Offline Worker', sessionRole: 'participant', kind: 'blocked', turnNumber: null, durationMs: null, outcome: null, inputType: null, createdAt: new Date(operation.from).toISOString(), readAt: null, title: 'IN_WINDOW_NOTIFICATION_MARKER', body: 'An alert, not completion proof' }], nextCursor: null }, coverage: { from: operation.from, to: operation.to, complete: false, gaps: ['Retention coverage limited'] } } };
     if (operation.kind === 'status') return { ok: true, value: { kind: 'status', snapshot: { manager: { id: managerId, hostPcId: 'owned', lifecycle: 'online', binding: { managerId, hostPcId: 'owned', launchId: crypto.randomUUID(), sessionId: manager.getSessionId(), instanceId, generation: 1 } }, observedAt: now } } };
-    if (operation.kind === 'list') return { ok: true, value: { kind: 'list', page: { items: [{ target, name: 'Worker' }], total: 1, nextCursor: null } } } as ManagerResult;
+    if (operation.kind === 'list') return mode === 'notification-only' ? { ok: false, code: 'runtime_unavailable' } : { ok: true, value: { kind: 'list', page: { items: [{ target, name: 'Worker' }], total: 1, nextCursor: null } } } as ManagerResult;
     if (operation.kind === 'changes') return { ok: true, value: { kind: 'changes', target, result: { kind: 'changes', sessionId: target.sessionId, from: operation.from, to: operation.to, entries: [{ at: now - 1, text: 'IN_WINDOW_WORKER_MARKER' }], nextCursor: null, truncated: false, coverage: { from: operation.from, to: operation.to, complete: true, gaps: [] } } } };
     throw Error('side_question_forbidden');
   };
@@ -93,7 +96,14 @@ test('actual SDK summary request excludes historical conversation and tools; dis
     await posted.promise;
     expect(payloads).toHaveLength(1); expect(hookPayloads).toHaveLength(1);
     const serialized = JSON.stringify(payloads[0]);
-    expect(serialized).toContain('IN_WINDOW_WORKER_MARKER');
+    expect(serialized).toContain('IN_WINDOW_NOTIFICATION_MARKER');
+    expect(serialized).toContain('Offline Worker');
+    expect(serialized).toContain('Retention coverage limited');
+    if (mode === 'notification-only') { expect(serialized).toContain('Session list unavailable'); expect(serialized).not.toContain('IN_WINDOW_WORKER_MARKER'); }
+    else expect(serialized).toContain('IN_WINDOW_WORKER_MARKER');
+    expect(serialized).toContain('not proof of task completion');
+    expect(operations.filter(operation => operation.kind === 'notifications')).toEqual([{ kind: 'notifications', from: now - MANAGER_REVIEW_MS, to: now, limit: 100 }]);
+    expect(operations.every(operation => ['status', 'notifications', 'list', ...(mode === 'notification-only' ? [] : ['changes'])].includes(operation.kind))).toBe(true);
     expect(serialized).not.toContain('OLD_ROOT_MARKER'); expect(serialized).not.toContain('OLD_LEDGER_MARKER');
     expect(serialized).not.toContain('OUTSIDE_WINDOW_WORKER_MARKER');
     const payload = payloads[0] as { tools?: unknown[]; messages: unknown[] };
