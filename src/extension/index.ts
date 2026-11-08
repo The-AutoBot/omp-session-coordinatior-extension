@@ -29,6 +29,11 @@ import { NativeHostVoice, type NativeVoiceAgentEnd, type NativeVoiceMessage } fr
 import { NativeInputReceipt } from "./native-input-receipt";
 import { dashboardUrl, enrollDevice, explicitCredentials, openVerificationPage, persistCredentials, readCredentials, selectStoredCredentials, validateCredentials, type DeviceCredentials } from "./device-enrollment";
 import { installManagedSession, managedSentinelIdentity, managedSessionIdentity } from "./managed-session";
+import { attachManagerProof, consumeManagerProof } from "./managed-session";
+import { ManagerDelivery } from "./manager-delivery";
+import { ManagerWake, installSessionManager } from "./session-manager";
+import type { ManagerOperation, ManagerResult } from "../shared/manager";
+import { ManagementInput } from "./management-input";
 
 const MAX_SESSION_FIELD_LENGTH = 200;
 const MAX_CWD_LENGTH = 2_048;
@@ -86,6 +91,7 @@ type AutomaticCollabIdentity = Readonly<Pick<SessionDescriptor, "instanceId" | "
 
 type RuntimeConfiguration = {
 	allowSteer: boolean;
+  managementIdentity?: { managerId: string; launchId: string };
 	configuredName: string | undefined;
 	machineKey: string;
 	session: Omit<SessionDescriptor, "connectedAt">;
@@ -114,6 +120,19 @@ type PublishedRoom = {
 class SessionBusRuntime {
   private consult: SessionConsult | undefined;
   private correction: SentinelCorrection | undefined;
+  private delivery: ManagerDelivery | undefined;
+  private wake: ManagerWake | undefined;
+  private managerToolInstalled = false;
+  public filterManagerContext<T>(messages: T[], ctx: ExtensionContext): T[] {
+    if (!this.acceptsLifecycle(ctx)) return messages.filter(m => !m || typeof m !== "object" || !("customType" in m) ||
+      !["manager:instruction", "manager:assignment-snapshot", "manager:update"].includes(String(m.customType)));
+    const delivered = this.delivery ? this.delivery.filter(messages) : messages.filter(m => !m || typeof m !== "object" ||
+      !("customType" in m) || !["manager:instruction", "manager:assignment-snapshot"].includes(String(m.customType)));
+    return this.wake?.filter(delivered) ?? delivered;
+  }
+  public managerRequest(operation: ManagerOperation, signal?: AbortSignal): Promise<ManagerResult> {
+    return this.client?.managerRequest(operation, signal) ?? Promise.resolve({ ok: false, code: "manager_unavailable" });
+  }
   public filterCorrectionContext<T>(messages: T[], ctx: ExtensionContext): T[] {
     if (!this.receiptContext || ctx.sessionManager !== this.receiptContext.sessionManager ||
       ctx.sessionManager.getSessionId() !== this.sessionId || !isRootInteractive(ctx)) {
@@ -157,6 +176,12 @@ class SessionBusRuntime {
 	private idle = true;
 	private needsInput = false;
 	private collabNeedsInput = false;
+  private readonly managementInput = new ManagementInput(() => {
+    this.consult?.invalidate();
+    this.correction?.cancelPending();
+    this.client?.setManagementState(this.managementInput.revision, this.pendingToolApprovals.size > 0);
+  });
+  private inputInstanceId: string | undefined;
 	private readonly pendingToolApprovals = new Set<string>();
 	private agentStartedAtMs: number | undefined;
 	private currentTurnNumber: number | undefined;
@@ -293,6 +318,10 @@ class SessionBusRuntime {
 		}
 
 		this.sessionId = configuration.value.session.sessionId;
+    if (this.inputInstanceId !== configuration.value.session.instanceId) {
+      this.inputInstanceId = configuration.value.session.instanceId;
+      this.managementInput.reset(ctx.sessionManager.getEntries());
+    }
 		this.enrollmentDashboard = configuration.value.enrollmentDashboard;
 		this.rpcParticipantSessionId = ctx.mode === "rpc" ? this.sessionId : undefined;
 		this.automaticCollabIdentity = {
@@ -313,6 +342,7 @@ class SessionBusRuntime {
     this.consult = consult;
 		const client = new SessionBusClient({
 			allowSteer: configuration.value.allowSteer,
+      ...(configuration.value.managementIdentity ? { managementIdentity: configuration.value.managementIdentity } : {}),
 			interactiveRoot: isRootInteractive(ctx),
 			session: configuration.value.session,
 			machineKey: configuration.value.machineKey,
@@ -323,6 +353,9 @@ class SessionBusRuntime {
       onVoiceDisconnect: () => this.nativeVoice.close("closed"),
       onInputReceipt: request => this.nativeInputReceipt.handle(request),
       onInspect: (operation, signal) => consult.handle(operation, signal),
+      onManagerAction: frame => this.delivery?.request(frame),
+      onManagerCancel: id => this.delivery?.cancel(id),
+      onManagerChanged: sequence => this.wake?.changed(sequence),
       ...(isRootInteractive(ctx) ? {
         onCorrection: (request: SentinelCorrectionRequest) => correction.request(request),
         onCorrectionCancel: (requestId: string) => correction.cancel(requestId),
@@ -333,6 +366,30 @@ class SessionBusRuntime {
 			onStatusChange: status => {
 				if (this.namingBinding?.client === client && this.acceptsLifecycle(ctx)) {
 					this.handleClientStatus(status, ctx);
+          if (status.state !== "registered") { this.delivery?.close(); this.wake?.disconnected(); }
+          if (status.state === "registered") {
+            attachManagerProof(challenge => {
+              const sent = client.managerProof({ type: "manager_bind_proof", challengeId: challenge.challengeId, connectionId: challenge.connectionId, nonce: challenge.nonce });
+              const confirm = (attempt: number): void => {
+                if (this.client !== client || client.managementConnectionId() !== challenge.connectionId) return;
+                void client.managerRequest({ kind: "status" }).then(result => {
+                  if (this.client !== client || client.managementConnectionId() !== challenge.connectionId) return;
+                  if (!result.ok) {
+                    if (attempt < 2 && ["manager_unavailable", "not_authorized"].includes(result.code))
+                      ctx.setTimeout(() => confirm(attempt + 1), attempt === 0 ? 250 : 1000);
+                    return;
+                  }
+                  if (result.value.kind !== "status") return;
+                  const b = result.value.snapshot.manager.binding;
+                  if (b?.managerId !== challenge.managerId || b.launchId !== challenge.launchId || b.sessionId !== challenge.sessionId || b.instanceId !== challenge.instanceId) return;
+                  consumeManagerProof(challenge.challengeId);
+                  void this.wake?.reconcile();
+                });
+              };
+              if (sent) confirm(0);
+              return sent;
+            });
+          }
 				}
 			},
 			onDiagnostic: diagnostic => this.logAutomaticCollab(
@@ -340,11 +397,29 @@ class SessionBusRuntime {
 		});
     const correction = new SentinelCorrection(this.pi, () => this.receiptContext === ctx &&
       this.client === client && client.getStatus().state === "registered" &&
-      isRootInteractive(ctx) && ctx.sessionManager.getSessionId() === configuration.value.session.sessionId,
+      isRootInteractive(ctx) && this.managementInput.available && ctx.sessionManager.getSessionId() === configuration.value.session.sessionId,
       configuration.value.session.sessionId, configuration.value.session.instanceId,
       (requestId, status) => client.correctionResult(requestId, status));
     this.correction = correction;
 		this.client = client;
+    const target = { pcId: configuration.value.session.pcId, sessionId: configuration.value.session.sessionId, instanceId: configuration.value.session.instanceId };
+    this.delivery = new ManagerDelivery(this.pi, target, () => ({
+      valid: this.receiptContext === ctx && this.client === client && client.getStatus().state === "registered" && isRootInteractive(ctx) && this.managementInput.available && ctx.sessionManager.getSessionId() === target.sessionId,
+      inputRevision: this.managementInput.revision, allowSteer: configuration.value.allowSteer, pendingToolApproval: this.pendingToolApprovals.size > 0,
+    }), (id, state, code) => client.managerActionResult(id, state, code),
+      ctx.sessionManager.getEntries().flatMap(entry => entry.type === "custom" && entry.customType === "manager:delivery-state" ? [entry.data] : []),
+      record => this.pi.appendEntry("manager:delivery-state", record));
+    const manager = managedSessionIdentity(ctx);
+    if (manager?.managedAgent === "manager" && manager.managerId) {
+      this.wake = new ManagerWake(this.pi, ctx, manager.managerId, target.instanceId,
+        () => this.client === client && this.acceptsLifecycle(ctx) && client.getStatus().state === "registered", operation => client.managerRequest(operation));
+      if (!this.managerToolInstalled) {
+        installSessionManager(this.pi, () => !!this.receiptContext && managedSessionIdentity(this.receiptContext)?.managedAgent === "manager",
+          (operation, signal) => this.managerRequest(operation, signal));
+        this.managerToolInstalled = true;
+      }
+    }
+    client.setManagementState(this.managementInput.revision, this.pendingToolApprovals.size > 0);
 		this.namingBinding = {
 			client, ctx, sessionId: this.sessionId, role: configuration.value.session.role,
 			configuredName: configuration.value.configuredName, name: configuration.value.session.name,
@@ -356,6 +431,9 @@ class SessionBusRuntime {
 	}
 
 	public shutdown(): void {
+    attachManagerProof(undefined);
+    this.delivery?.close(); this.delivery = undefined;
+    this.wake?.close(); this.wake = undefined;
     this.correction?.close();
     this.correction = undefined;
     this.invalidateConsultation();
@@ -459,8 +537,20 @@ class SessionBusRuntime {
 	public setIdle(idle: boolean): void {
 		this.idle = idle;
 		this.client?.setIdle(idle);
+    if (idle) this.wake?.idle();
 		this.refreshAutomaticRoom();
 	}
+
+  public observeExternalInput(ctx: ExtensionContext): void {
+    if (!this.acceptsLifecycle(ctx) || !isRootInteractive(ctx)) return;
+    this.managementInput.advance();
+  }
+  public observeCollaborationInput(messages: readonly unknown[], ctx: ExtensionContext): void {
+    if (!this.acceptsLifecycle(ctx) || !isRootInteractive(ctx)) return;
+    if (this.managementInput.observe(messages)) this.reconcileManagerInput();
+  }
+  public reconcileManagerInput(): void { void this.wake?.reconcile(true); }
+  public reconcileManagerTurn(): void { void this.wake?.reconcile(); }
 
 	public setNeedsInput(needsInput: boolean): void {
 		this.collabNeedsInput = needsInput;
@@ -486,6 +576,7 @@ class SessionBusRuntime {
 		this.needsInput = needsInput;
 		const client = this.client;
 		client?.setNeedsInput(needsInput);
+    client?.setManagementState(this.managementInput.revision, this.pendingToolApprovals.size > 0);
 		if (!needsInput) this.pendingBlockedNotification = false;
 		if (becameBlocked && client !== undefined) this.pendingBlockedNotification = true;
 		this.publishPendingBlockedNotification();
@@ -586,7 +677,7 @@ class SessionBusRuntime {
 
 	private canPublishTerminalNotification(client: SessionBusClient<ExtensionTimer>): boolean {
 		const binding = this.namingBinding;
-		if (binding?.client === client && managedSentinelIdentity(binding.ctx) !== undefined) return false;
+		if (binding?.client === client && managedSessionIdentity(binding.ctx)?.managedAgent) return false;
 		const status = client.getStatus();
 		return status.state === "registered" && (status.role === "participant" || status.activeCoordinator);
 	}
@@ -1355,9 +1446,14 @@ export default function sessionBusExtension(pi: ExtensionAPI): void {
 	});
   pi.on("session_tree", () => runtime.invalidateConsultation());
   pi.on("session_compact", () => runtime.invalidateConsultation());
+  pi.on("before_agent_start", (_event, ctx) => {
+    if (runtime.acceptsLifecycle(ctx)) runtime.reconcileManagerTurn();
+  });
 	pi.on("input", async (event, ctx) => {
+    runtime.observeExternalInput(ctx);
 		if (event.source !== "interactive" ||
 			(event.text.trim().length === 0 && !event.images?.length)) return;
+    runtime.reconcileManagerInput();
     runtime.invalidateConsultation();
 		await runtime.acknowledgeInteractiveInput(ctx);
 	});
@@ -1394,8 +1490,14 @@ export default function sessionBusExtension(pi: ExtensionAPI): void {
 			event.signal,
 		);
 	});
-  pi.on("context", (event, ctx) => ({ messages: runtime.filterCorrectionContext(runtime.filterVoiceContext(event.messages), ctx) }));
-  pi.on("message_start", event => runtime.voiceMessageStart(event.message));
+  pi.on("context", (event, ctx) => {
+    runtime.observeCollaborationInput(event.messages, ctx);
+    return { messages: runtime.filterManagerContext(runtime.filterCorrectionContext(runtime.filterVoiceContext(event.messages), ctx), ctx) };
+  });
+  pi.on("message_start", (event, ctx) => {
+    runtime.observeCollaborationInput([event.message], ctx);
+    runtime.voiceMessageStart(event.message);
+  });
   pi.on("message_end", event => runtime.voiceMessageEnd(event.message));
 	pi.on("agent_end", (event, ctx) => {
 		if (!runtime.acceptsLifecycle(ctx)) return;
@@ -1487,6 +1589,8 @@ function loadRuntimeConfiguration(ctx: ExtensionContext, candidate?: DeviceCrede
 		ok: true,
 		value: {
 			configuredName,
+      ...(managed?.managedAgent === "manager" && managed.managerId && managed.launchId
+        ? { managementIdentity: { managerId: managed.managerId, launchId: managed.launchId } } : {}),
 			allowSteer: process.env.OMP_SESSION_BUS_ALLOW_STEER === "1",
 			machineKey: token,
 			url: url.toString(),
@@ -1495,10 +1599,10 @@ function loadRuntimeConfiguration(ctx: ExtensionContext, candidate?: DeviceCrede
 				pcId,
 				sessionId,
 				instanceId: managed?.instanceId ?? crypto.randomUUID(),
-				...(managed?.managedAgent === "sentinel" ? { managedAgent: managed.managedAgent } : {}),
+        ...(managed?.managedAgent ? { managedAgent: managed.managedAgent } : {}),
 				name,
 				cwd: ctx.cwd,
-				role: managed?.managedAgent === "sentinel" ? "participant" : roleValue,
+        role: managed?.managedAgent ? "participant" : roleValue,
 				idle: ctx.isIdle(),
 			},
 		},

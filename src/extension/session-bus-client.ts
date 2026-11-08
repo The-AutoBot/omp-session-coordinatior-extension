@@ -20,6 +20,9 @@ import {
 import { type InputReceiptRequest, type InputReceiptResult, inputReceiptResultSchema } from "../shared/collab-input-receipts";
 import { inspectResultSchema, type InspectOperation, type InspectResult } from "../shared/session-consult";
 import type { SentinelCorrectionRequest, SentinelCorrectionStatus } from "../shared/sentinel-correction";
+import { managerOperationSchema, managerResultFrameSchema, managerActionFrameSchema, managerActionCancelFrameSchema, managerChangedSchema, managerBindProofSchema, type ManagerOperation, type ManagerResult } from "../shared/manager";
+import type { z } from "zod";
+import type { ManagerErrorCode } from "../shared/manager";
 
 const MAX_INBOX_MESSAGES = 100;
 const MAX_PROCESSED_MESSAGE_IDS = 512;
@@ -69,6 +72,10 @@ export interface SessionBusClientOptions<TTimer> {
 	session: Omit<SessionDescriptor, "connectedAt">;
 	allowSteer: boolean;
 	interactiveRoot?: boolean;
+  managementIdentity?: { managerId: string; launchId: string };
+  onManagerAction?(frame: z.infer<typeof managerActionFrameSchema>): void;
+  onManagerCancel?(actionId: string): void;
+  onManagerChanged?(throughSequence: number): void;
 	timers: ManagedTimers<TTimer>;
 	onInboundMessage(message: AgentMessage): void | Promise<void>;
   onVoiceCommand?(command: VoiceHostCommand): void;
@@ -168,6 +175,44 @@ type HeaderCapableWebSocketConstructor = typeof WebSocket & {
 
 /** A session-scoped client for the central credential-free WSS /bus endpoint and loopback WS development. */
 export class SessionBusClient<TTimer> {
+  private managerPending = new Map<string, { resolve: (result: ManagerResult) => void; cancel: () => void }>();
+  private managerConnectionId: string | undefined;
+  private readonly managerCallbacks: Pick<SessionBusClientOptions<TTimer>, "onManagerAction" | "onManagerCancel" | "onManagerChanged">;
+  public managementConnectionId() { return this.registered ? this.managerConnectionId : undefined; }
+  public managerProof(proof: z.infer<typeof managerBindProofSchema>): boolean {
+    if (!this.registered || proof.connectionId !== this.managerConnectionId) return false;
+    const checked = managerBindProofSchema.safeParse(proof);
+    if (!checked.success || !this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
+    this.socket.send(JSON.stringify(checked.data)); return true;
+  }
+  public managerActionResult(actionId: string, state: "admitted" | "rejected" | "unknown", code?: ManagerErrorCode): void {
+    if (this.registered) this.socket?.send(JSON.stringify({ type: "manager_action_result", actionId,
+      target: { pcId: this.session.pcId, sessionId: this.session.sessionId, instanceId: this.session.instanceId }, state, ...(code ? { code } : {}) }));
+  }
+  public managerRequest(raw: ManagerOperation, signal?: AbortSignal): Promise<ManagerResult> {
+    const operation = managerOperationSchema.parse(raw);
+    if (!this.registered || signal?.aborted) return Promise.resolve({ ok: false, code: "manager_unavailable" });
+    if (this.managerPending.size >= MAX_PENDING_REQUESTS) return Promise.resolve({ ok: false, code: "capacity" });
+    const requestId = crypto.randomUUID();
+    const wire = JSON.stringify({ type: "manager_request", requestId, operation });
+    if (Buffer.byteLength(wire, "utf8") > 512 * 1024) return Promise.resolve({ ok: false, code: "invalid_request" });
+    const { promise, resolve } = Promise.withResolvers<ManagerResult>();
+      const finish = (result: ManagerResult) => {
+        if (result.ok && result.value.kind !== operation.kind) result = { ok: false, code: "invalid_request" };
+        this.managerPending.delete(requestId); this.timers.clearTimer(timer); signal?.removeEventListener("abort", cancel); resolve(result);
+      };
+      const cancel = () => {
+        try { this.socket?.send(JSON.stringify({ type: "manager_cancel", requestId })); } catch {}
+        finish({ ok: false, code: "outcome_unknown" });
+      };
+      const delay = operation.kind === "inspect" ? operation.operation.kind === "question" ? 120_000 : 10_000 : 30_000;
+      const timer = this.timers.setTimeout(cancel, delay);
+      this.managerPending.set(requestId, { resolve: finish, cancel });
+      signal?.addEventListener("abort", cancel, { once: true });
+      try { this.socket!.send(wire); }
+      catch { finish({ ok: false, code: "manager_unavailable" }); }
+    return promise;
+  }
 	private readonly allowSteer: boolean;
 	private readonly interactiveRoot: boolean;
 	private lastRoomPublicationFailure: string | undefined;
@@ -200,6 +245,9 @@ export class SessionBusClient<TTimer> {
 	private rejectedSteerCount = 0;
 	private socket: WebSocket | undefined;
 	private needsInput = false;
+  private inputRevision = 0;
+  private pendingToolApproval = false;
+  private readonly managementIdentity: SessionBusClientOptions<TTimer>["managementIdentity"];
 	private automaticCollabDiagnostic: AutomaticCollabDiagnostic | undefined;
 	private terminalNotifications = new Map<string, PendingTerminalNotification>();
 	private room: SessionRoom | null = null;
@@ -216,7 +264,9 @@ export class SessionBusClient<TTimer> {
 	private handlingMessageIds = new Set<string>();
 
 	public constructor(options: SessionBusClientOptions<TTimer>) {
+    this.managerCallbacks = options;
 		this.allowSteer = options.allowSteer;
+    this.managementIdentity = options.managementIdentity;
 		this.interactiveRoot = options.interactiveRoot === true;
 		this.onInboundMessage = options.onInboundMessage;
     this.onVoiceCommand = options.onVoiceCommand;
@@ -243,6 +293,8 @@ export class SessionBusClient<TTimer> {
 
 	public shutdown(): void {
 		this.cancellationGeneration += 1;
+    for (const pending of [...this.managerPending.values()]) pending.cancel();
+    this.managerConnectionId = undefined;
     for (const controller of this.inspections.values()) controller.abort();
     this.inspections.clear();
     this.cancelPendingCorrections();
@@ -361,6 +413,13 @@ export class SessionBusClient<TTimer> {
 		this.needsInput = needsInput;
 		this.publishInputState();
 	}
+
+  public setManagementState(inputRevision: number, pendingToolApproval: boolean): void {
+    if (this.inputRevision === inputRevision && this.pendingToolApproval === pendingToolApproval) return;
+    this.inputRevision = inputRevision;
+    this.pendingToolApproval = pendingToolApproval;
+    if (this.registered) this.sendFrame({ type: "management_state", inputRevision, pendingToolApproval });
+  }
 
 	public setAutomaticCollabDiagnostic(status: AutomaticCollabDiagnostic): void {
 		const previousDiagnostic = this.automaticCollabDiagnostic;
@@ -504,6 +563,11 @@ export class SessionBusClient<TTimer> {
 				this.sendFrame({
 					type: "register",
 					session: { ...this.session, connectedAt: new Date().toISOString() },
+          managementProtocol: 1,
+          allowSteer: this.allowSteer,
+          inputRevision: this.inputRevision,
+          pendingToolApproval: this.pendingToolApproval,
+          ...this.managementIdentity,
           inputReceiptAvailable: !!this.onInputReceipt && this.inputReceiptAvailable?.() === true,
 					interactiveRoot: this.interactiveRoot,
           sentinelCorrectionAvailable: this.interactiveRoot && !!this.onCorrection,
@@ -530,6 +594,8 @@ export class SessionBusClient<TTimer> {
 				...(this.lastErrorCode === undefined ? {} : { errorCode: safeSessionBusErrorCode(this.lastErrorCode)! }),
 			} });
 			this.socket = undefined;
+      this.managerConnectionId = undefined;
+      for (const pending of [...this.managerPending.values()]) pending.cancel();
 			this.registered = false;
       this.cancelPendingCorrections();
 			this.activeCoordinator = false;
@@ -552,6 +618,9 @@ export class SessionBusClient<TTimer> {
 			this.closeCurrentSocket();
 			return;
 		}
+    // Preserve large ordinary consultation answers while bounding pre-JSON allocation.
+    const wireBytes = Buffer.byteLength(data, "utf8");
+    if (wireBytes > 2 * 1024 * 1024) { this.closeCurrentSocket(); return; }
 		let rawFrame: unknown;
 		try {
 			rawFrame = JSON.parse(data);
@@ -560,6 +629,19 @@ export class SessionBusClient<TTimer> {
 			this.closeCurrentSocket();
 			return;
 		}
+    if (typeof rawFrame === "object" && rawFrame !== null && "type" in rawFrame && typeof rawFrame.type === "string" && rawFrame.type.startsWith("manager_")) {
+      if (!this.registered) return;
+      if (wireBytes > 512 * 1024) { this.closeCurrentSocket(); return; }
+      const result = managerResultFrameSchema.safeParse(rawFrame);
+      if (result.success) { this.managerPending.get(result.data.requestId)?.resolve(result.data.result); return; }
+      const action = managerActionFrameSchema.safeParse(rawFrame);
+      if (action.success) { this.managerCallbacks.onManagerAction?.(action.data); return; }
+      const cancel = managerActionCancelFrameSchema.safeParse(rawFrame);
+      if (cancel.success && cancel.data.target.sessionId === this.session.sessionId && cancel.data.target.instanceId === this.session.instanceId && cancel.data.target.pcId === this.session.pcId) { this.managerCallbacks.onManagerCancel?.(cancel.data.actionId); return; }
+      const changed = managerChangedSchema.safeParse(rawFrame);
+      if (changed.success) this.managerCallbacks.onManagerChanged?.(changed.data.throughSequence);
+      return;
+    }
     if (typeof rawFrame === "object" && rawFrame !== null && "type" in rawFrame &&
         typeof rawFrame.type === "string" && rawFrame.type.startsWith("voice_")) {
       const command = voiceHostCommandSchema.safeParse(rawFrame);
@@ -653,6 +735,7 @@ export class SessionBusClient<TTimer> {
         return;
 			case "registered": {
 				this.registered = true;
+        this.managerConnectionId = frame.managementConnectionId;
 				this.activeCoordinator = frame.coordinator;
 				this.reconnectAttempt = 0;
 				this.lastErrorCode = undefined;

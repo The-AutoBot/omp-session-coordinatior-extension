@@ -4,12 +4,15 @@ import {
 } from "./machines";
 
 import { z } from "zod";
-import { sentinelCorrectionRequestSchema, sentinelCorrectionCancelSchema, sentinelCorrectionResultSchema } from "./sentinel-correction";
 import { inputReceiptRequestSchema, inputReceiptResultSchema } from "./collab-input-receipts";
 import {
   inspectClientRequestSchema, inspectClientResultSchema, inspectCancelSchema,
   inspectHostRequestSchema, inspectResponseSchema,
 } from "./session-consult";
+import { sentinelCorrectionRequestSchema, sentinelCorrectionCancelSchema, sentinelCorrectionResultSchema } from "./sentinel-correction";
+import { managementStateSchema, managerRequestSchema, managerCancelSchema, managerBindProofSchema,
+  managerActionResultFrameSchema, managerResultFrameSchema, managerActionFrameSchema,
+  managerActionCancelFrameSchema, managerChangedSchema } from "./manager";
 
 export const SESSION_ROLES = ["coordinator", "participant"] as const;
 export const DELIVERY_MODES = ["followUp", "nextTurn", "steer"] as const;
@@ -62,8 +65,7 @@ export const sessionDescriptorSchema = z.object({
   name: z.string().min(1).max(200),
   cwd: z.string().min(1).max(2_048),
   role: z.enum(SESSION_ROLES),
-  managedAgent: z.literal("sentinel").optional(),
-  sentinelCorrectionAvailable: z.boolean().optional(),
+  managedAgent: z.enum(["sentinel", "manager"]).optional(),
   idle: z.boolean(),
   connectedAt: z.string().datetime(),
 });
@@ -105,9 +107,10 @@ export const automaticCollabDiagnosticSchema = z
 export const dashboardSessionSchema = z.object({
   pcId: pcIdSchema,
   sessionId: sessionIdSchema,
+  instanceId: z.string().uuid().optional(),
   name: z.string().min(1).max(200),
   role: z.enum(SESSION_ROLES),
-  managedAgent: z.literal("sentinel").optional(),
+  managedAgent: z.enum(["sentinel", "manager"]).optional(),
   idle: z.boolean(),
   needsInput: z.boolean(),
   connectedAt: z.string().datetime(),
@@ -332,6 +335,11 @@ export type VoiceHostCommand = z.infer<typeof voiceHostCommandSchema>;
 export type VoiceHostEvent = z.infer<typeof voiceHostEventSchema>;
 export type VoiceControlReply = z.infer<typeof voiceControlReplySchema>;
 export const clientFrameSchema = z.discriminatedUnion("type", [
+  managementStateSchema,
+  managerRequestSchema,
+  managerCancelSchema,
+  managerBindProofSchema,
+  managerActionResultFrameSchema,
   sentinelCorrectionResultSchema,
   inspectClientRequestSchema,
   inspectClientResultSchema,
@@ -344,8 +352,19 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
       interactiveRoot: z.boolean().optional(),
       sentinelInspectionAvailable: z.boolean().optional(),
       sentinelCorrectionAvailable: z.boolean().optional(),
+      managementProtocol: z.literal(1).optional(),
+      allowSteer: z.boolean().optional(),
+      inputRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+      pendingToolApproval: z.boolean().optional(),
+      managerId: z.string().uuid().optional(),
+      launchId: z.string().uuid().optional(),
     })
-    .strict(),
+    .strict().superRefine((value, ctx) => {
+      if (value.managementProtocol === 1 && (value.allowSteer === undefined || value.inputRevision === undefined || value.pendingToolApproval === undefined))
+        ctx.addIssue({ code: "custom", message: "Incomplete management capability tuple." });
+      if (value.session.managedAgent === "manager" && (!value.managerId || !value.launchId || value.managementProtocol !== 1))
+        ctx.addIssue({ code: "custom", message: "Manager registration requires owned identity and management protocol." });
+    }),
   z.object({ type: z.literal("list"), requestId: z.string().uuid() }),
   z.object({ type: z.literal("send"), requestId: z.string().uuid(), message: agentMessageSchema }),
   z.object({ type: z.literal("ack"), messageId: z.string().uuid() }),
@@ -382,6 +401,10 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
 ]);
 
 export const serverFrameSchema = z.discriminatedUnion("type", [
+  managerResultFrameSchema,
+  managerActionFrameSchema,
+  managerActionCancelFrameSchema,
+  managerChangedSchema,
   sentinelCorrectionRequestSchema,
   sentinelCorrectionCancelSchema,
   inspectHostRequestSchema,
@@ -392,6 +415,7 @@ export const serverFrameSchema = z.discriminatedUnion("type", [
       type: z.literal("registered"),
       sessionId: sessionIdSchema,
       coordinator: z.boolean(),
+      managementConnectionId: z.string().uuid().optional(),
     })
     .strict(),
   z.object({ type: z.literal("sessions"), requestId: z.string().uuid(), sessions: z.array(sessionDescriptorSchema) }),

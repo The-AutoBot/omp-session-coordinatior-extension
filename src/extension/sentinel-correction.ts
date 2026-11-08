@@ -27,6 +27,7 @@ export class SentinelCorrection {
     } catch { this.finish(entry, 'unavailable'); }
   }
   cancel(requestId: string): void { const entry = this.entries.get(requestId); if (entry) this.finish(entry, 'cancelled'); }
+  cancelPending(): void { for (const entry of this.entries.values()) if (!entry.status) this.finish(entry, 'cancelled'); }
   close(): void { for (const entry of this.entries.values()) { this.finish(entry, 'unavailable'); clearTimeout(entry.timer); } }
   filter<T>(messages: T[]): T[] {
     return messages.filter(message => {
