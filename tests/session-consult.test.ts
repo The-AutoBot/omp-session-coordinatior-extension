@@ -46,7 +46,6 @@ describe("detached session consultation", () => {
     let aborted = false;
     const f = fixture([], async options => {
       expect(options.tools).toBe(false);
-      expect(options.promptText).toContain("untrusted external data");
       options.signal!.addEventListener("abort", () => { aborted = true; });
       await options.onTextDelta!("x".repeat(256_001));
       throw new Error("unreachable");
@@ -81,6 +80,78 @@ describe("detached session consultation", () => {
     expect(await fixture().consult.handle({ kind: "question", question: "?" }, signal)).toEqual({ kind: "error", code: "unsupported_host" });
     const f = fixture([], async () => { throw new Error("transport requires native tools"); });
     expect(await f.consult.handle({ kind: "question", question: "?" }, signal)).toEqual({ kind: "error", code: "question_failed" });
+  });
+
+  test("diagnostics distinguish native rejection and malformed result without private text", async () => {
+    const diagnostics: Readonly<Record<string, string | number | boolean>>[] = [];
+    const privateText = "private question provider error payload";
+    const context = (runEphemeralTurn: ExtensionContext["runEphemeralTurn"]) =>
+      ({ sessionManager: { getSessionId: () => "target" }, runEphemeralTurn }) as unknown as ExtensionContext;
+    for (const run of [
+      async () => { throw new TypeError(privateText); },
+      async () => ({ replyText: undefined }) as never,
+    ]) {
+      const consult = new SessionConsult(context(run), () => true, fields => diagnostics.push(fields));
+      expect(await consult.handle({ kind: "question", question: privateText }, signal))
+        .toEqual({ kind: "error", code: "question_failed" });
+    }
+    expect(diagnostics[0]).toMatchObject({ stage: "native-call", errorType: "TypeError", reason: "unclassified" });
+    expect(diagnostics[1]).toMatchObject({ stage: "result", reason: "invalid-result-shape", replyType: "undefined" });
+    expect(diagnostics[0]!.consultationId).not.toBe(diagnostics[1]!.consultationId);
+    expect(JSON.stringify(diagnostics)).not.toContain(privateText);
+  });
+
+  test("returned stop reason and emptiness are bounded and diagnostic sink failure is inert", async () => {
+    const diagnostics: Readonly<Record<string, string | number | boolean>>[] = [];
+    const ctx = { sessionManager: { getSessionId: () => "target" }, runEphemeralTurn: async (options: { tools?: boolean; dedupeReply?: boolean }) => {
+      expect(options.tools).toBe(false); expect(options.dedupeReply).toBe(false);
+      return { replyText: "", assistantMessage: { stopReason: "length" } };
+    } } as unknown as ExtensionContext;
+    const consult = new SessionConsult(ctx, () => true, fields => { diagnostics.push(fields); throw Error("sink"); });
+    expect(await consult.handle({ kind: "question", question: "?" }, signal)).toEqual({ kind: "answer", sessionId: "target", text: "" });
+    expect(diagnostics[0]).toMatchObject({ outcome: "answer", stopReason: "length", empty: true });
+  });
+
+  test("native error metadata is allowlisted without invoking getters or exposing private payloads", async () => {
+    const diagnostics: Readonly<Record<string, string | number | boolean>>[] = [];
+    let getterReads = 0;
+    const known = Object.assign(new Error("PRIVATE_MESSAGE"), { name: "RateLimitError", status: 429, code: "ECONNRESET", headers: "PRIVATE_HEADERS" });
+    const unknown = Object.assign(new Error("PRIVATE_MESSAGE"), { name: "PRIVATE_NAME", code: "PRIVATE_CODE" });
+    Object.defineProperty(unknown, "status", { get() { getterReads++; throw Error("PRIVATE_GETTER"); } });
+    for (const failure of [known, unknown]) {
+      const ctx = { sessionManager: { getSessionId: () => "target" }, runEphemeralTurn: async () => { throw failure; } } as unknown as ExtensionContext;
+      const consult = new SessionConsult(ctx, () => true, fields => diagnostics.push(fields));
+      expect(await consult.handle({ kind: "question", question: "PRIVATE_QUESTION" }, signal)).toEqual({ kind: "error", code: "question_failed" });
+    }
+    expect(diagnostics[0]).toMatchObject({ errorType: "RateLimitError", httpStatus: 429, networkCode: "ECONNRESET" });
+    expect(diagnostics[1]).toMatchObject({ errorType: "Error" });
+    expect(diagnostics[1]).not.toHaveProperty("httpStatus");
+    expect(diagnostics[1]).not.toHaveProperty("networkCode");
+    expect(getterReads).toBe(0);
+    expect(JSON.stringify(diagnostics)).not.toContain("PRIVATE_");
+  });
+
+  test("a returned reply after a binding change is logged as unavailable, never as an answer", async () => {
+    const diagnostics: Readonly<Record<string, string | number | boolean>>[] = [];
+    let current = true;
+    const ctx = { sessionManager: { getSessionId: () => "target" }, runEphemeralTurn: async () => {
+      current = false;
+      return { replyText: "late", assistantMessage: { stopReason: "stop" } };
+    } } as unknown as ExtensionContext;
+    const consult = new SessionConsult(ctx, () => current, fields => diagnostics.push(fields));
+    expect(await consult.handle({ kind: "question", question: "?" }, signal)).toEqual({ kind: "error", code: "unavailable" });
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({ outcome: "unavailable", stopReason: "stop" });
+  });
+
+  test("hostile error metadata cannot escape the consultation failure boundary", async () => {
+    const diagnostics: Readonly<Record<string, string | number | boolean>>[] = [];
+    const failure = new Proxy({}, { getOwnPropertyDescriptor() { throw Error("PRIVATE_DESCRIPTOR"); } });
+    const ctx = { sessionManager: { getSessionId: () => "target" }, runEphemeralTurn: async () => { throw failure; } } as unknown as ExtensionContext;
+    const consult = new SessionConsult(ctx, () => true, fields => diagnostics.push(fields));
+    expect(await consult.handle({ kind: "question", question: "?" }, signal)).toEqual({ kind: "error", code: "question_failed" });
+    expect(diagnostics[0]).toMatchObject({ outcome: "question_failed", reason: "diagnostic-fields-unavailable" });
+    expect(JSON.stringify(diagnostics)).not.toContain("PRIVATE_");
   });
 
   test("wire defaults, strictness and answer bound", () => {

@@ -335,7 +335,11 @@ class SessionBusRuntime {
 		this.clearRuntimeTimer = timer => ctx.clearTimer(timer);
 		this.setRuntimeTimeout = (callback, delayMs) => ctx.setTimeout(callback, delayMs);
     const consult = new SessionConsult(ctx, () => this.receiptContext === ctx &&
-      ctx.sessionManager.getSessionId() === this.sessionId);
+      ctx.sessionManager.getSessionId() === this.sessionId,
+      fields => this.logAutomaticCollab(fields.outcome === "answer" ? "info" : "warn", "session_consult_outcome", this.automaticCollabGeneration, {
+        ...fields, pcId: configuration.value.session.pcId, sessionId: configuration.value.session.sessionId,
+        instanceId: configuration.value.session.instanceId,
+      }));
     this.consult = consult;
 		const client = new SessionBusClient({
 			allowSteer: configuration.value.allowSteer,

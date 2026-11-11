@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { InspectOperation, InspectResult } from "../shared/session-consult";
 
@@ -8,6 +8,7 @@ export class SessionConsult {
   private journal: readonly string[] | undefined;
   public constructor(
     private readonly ctx: ExtensionContext, private readonly current: () => boolean,
+    private readonly diagnose?: (fields: Readonly<Record<string, string | number | boolean>>) => void,
   ) {}
 
   public invalidate(): void { this.question?.abort(); }
@@ -49,6 +50,14 @@ export class SessionConsult {
     const abort = () => controller.abort();
     signal.addEventListener("abort", abort, { once: true });
     let length = 0;
+    const started = Date.now();
+    const consultationId = randomUUID();
+    let stage = "native-call";
+    const report = (fields: Readonly<Record<string, string | number | boolean>>) => {
+      try { this.diagnose?.({ ...fields, consultationId, elapsedMs: Math.max(0, Date.now() - started),
+        streamedCharacters: Math.min(length, 256_001), aborted: controller.signal.aborted }); }
+      catch { /* Diagnostics cannot affect consultation. */ }
+    };
     let tooLarge = false;
     try {
       const result = await this.ctx.runEphemeralTurn({
@@ -60,11 +69,58 @@ export class SessionConsult {
           if (!valid()) { controller.abort(); throw new Error("cancelled"); }
         },
       });
-      if (!valid()) return error(signal.aborted ? "cancelled" : "unavailable");
-      if (tooLarge || result.replyText.length > 256_000) return error("answer_too_large");
+      stage = "result";
+      if (!result || typeof result.replyText !== "string") {
+        const code = signal.aborted ? "cancelled" : !this.current() ? "unavailable" : "question_failed";
+        report({ outcome: code, stage, reason: "invalid-result-shape",
+          replyType: !result ? "missing-result" : typeof result.replyText });
+        return error(code);
+      }
+      const stopReason = result.assistantMessage?.stopReason;
+      const outcome = !valid() ? signal.aborted ? "cancelled" : "unavailable" :
+        tooLarge || result.replyText.length > 256_000 ? "answer_too_large" : "answer";
+      report({ outcome, stopReason: stopReason === "stop" || stopReason === "length" ||
+        stopReason === "aborted" || stopReason === "error" || stopReason === "toolUse" ? stopReason : "unknown",
+        ...(outcome === "answer_too_large" ? {} : { empty: result.replyText.trim().length === 0 }) });
+      if (outcome !== "answer") return error(outcome);
       return { kind: "answer", sessionId, text: result.replyText };
-    } catch {
-      return error(tooLarge ? "answer_too_large" : signal.aborted ? "cancelled" : !this.current() ? "unavailable" : "question_failed");
+    } catch (caught) {
+      const code = tooLarge ? "answer_too_large" : signal.aborted ? "cancelled" : !this.current() ? "unavailable" : "question_failed";
+      try {
+        // SDK stream errors may erase provider metadata. Match only known native
+        // guard messages; never retain raw text or inspect arbitrary getters.
+        let reason = "unclassified";
+        const data = (key: string): unknown => caught !== null && (typeof caught === "object" || typeof caught === "function")
+          ? Object.getOwnPropertyDescriptor(caught, key)?.value : undefined;
+        const message = data("message");
+        if (caught instanceof Error) {
+          if (message === "No active model on session") reason = "no-active-model";
+          else if (message === "Active model changed during ephemeral turn; retry.") reason = "model-changed";
+          else if (message === "Active session changed during ephemeral turn; retry.") reason = "session-changed";
+          else if (message === "Ephemeral turn ended without a final message") reason = "missing-final-message";
+          else if (typeof message === "string" && message.length <= 2048 &&
+            message.startsWith("Thinking loop detected: the model repeated near-identical content (") &&
+            message.endsWith("). Treating as a stream stall and retrying.")) reason = "thinking-loop";
+          else if (typeof message === "string" && message.length <= 2048 && message.startsWith("Model ")) {
+            if (message.endsWith(" does not support tools: false for ephemeral turns because its transport requires native tools."))
+              reason = "native-tools-required";
+            else if (message.endsWith(" cannot support tools: false with historical tool calls. Omit tools: false or start from tool-free history."))
+              reason = "tool-history-incompatible";
+          }
+        }
+        const name = data("name"), status = data("status") ?? data("statusCode"), network = data("code");
+        const knownName = typeof name === "string" && ["APIError", "APICallError", "AuthenticationError",
+          "PermissionDeniedError", "RateLimitError", "AbortError", "TimeoutError"].includes(name) ? name : undefined;
+        const networkCode = typeof network === "string" && ["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED",
+          "ENOTFOUND", "EAI_AGAIN", "ABORT_ERR", "ERR_ABORTED"].includes(network) ? network : undefined;
+        report({ outcome: code, stage, reason, errorType: knownName ?? (caught instanceof TypeError ? "TypeError" :
+          caught instanceof RangeError ? "RangeError" : caught instanceof Error ? "Error" : "non-error"),
+          ...(typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? { httpStatus: status } : {}),
+          ...(networkCode === undefined ? {} : { networkCode }) });
+      } catch {
+        report({ outcome: code, stage, reason: "diagnostic-fields-unavailable", errorType: "unknown" });
+      }
+      return error(code);
     } finally {
       signal.removeEventListener("abort", abort);
       if (this.question === controller) this.question = undefined;
